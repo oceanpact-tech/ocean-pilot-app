@@ -23,17 +23,12 @@ WildBridge is an **open-source Android application** (Kotlin, DJI Mobile SDK V5)
 
 # ⚠️ WildBridge has moved to Lyrebird
 
-**WildBridge has been renamed and is now actively developed as [Lyrebird](https://github.com/SDU-UAS-Center/lyrebird).**
+**WildBridge is now actively developed as [Lyrebird](https://github.com/SDU-UAS-Center/lyrebird).**
 
 👉 **New repository:** https://github.com/SDU-UAS-Center/lyrebird  
 📚 **Documentation:** https://sdu-uas-center.github.io/lyrebird/
 
 This repository is retained for reference and for users of earlier WildBridge versions, but is **no longer maintained**. New features, bug fixes, releases, and documentation are available in the Lyrebird repository.
-
-Lyrebird continues the work started in WildBridge while extending it with MAVLink 2 compatibility, allowing supported DJI aircraft to interface directly with tools such as QGroundControl, MAVSDK, pymavlink, ROS 2, and existing HTTP/TCP-based WildBridge integrations.
-
-# ✈️ THANK YOU FOR FLYING WITH US! 🐦
-
 ---
 
 # WildBridge
