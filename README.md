@@ -21,14 +21,18 @@
 
 WildBridge is an **open-source Android application** (Kotlin, DJI Mobile SDK V5) that runs directly on the DJI Remote Controller, or on a compatible Android phone connected through a DJI controller, and exposes drone telemetry, control, and video streaming over a local Wi-Fi network. It removes the need to interact with DJI's proprietary SDK from the ground station — any language or framework with HTTP and TCP socket support can integrate with WildBridge.
 
-# ⚠️ WildBridge has moved to Lyrebird
+# ⚠️ WildBridge development has moved to Lyrebird
 
-**WildBridge is now actively developed as [Lyrebird](https://github.com/SDU-UAS-Center/lyrebird).**
+**WildBridge is continuing its development as [Lyrebird](https://github.com/SDU-UAS-Center/lyrebird), a more advanced evolution of the original project.**
 
-👉 **New repository:** https://github.com/SDU-UAS-Center/lyrebird  
-📚 **Documentation:** https://sdu-uas-center.github.io/lyrebird/
+Lyrebird builds directly on the WildBridge foundation while extending its capabilities, architecture, platform support, and documentation.
 
-This repository is retained for reference and for users of earlier WildBridge versions, but is **no longer maintained**. New features, bug fixes, releases, and documentation are available in the Lyrebird repository.
+👉 **Current development repository:** [https://github.com/SDU-UAS-Center/lyrebird](https://github.com/SDU-UAS-Center/lyrebird)  
+📚 **Documentation:** [https://sdu-uas-center.github.io/lyrebird/](https://sdu-uas-center.github.io/lyrebird/)
+
+WildBridge remains functional and can continue to be used for existing setups and deployments. This repository is kept available for users of earlier WildBridge versions and for reference.
+
+All new development, including features, fixes, releases, and documentation, is now taking place in the Lyrebird repository.
 ---
 
 # WildBridge
