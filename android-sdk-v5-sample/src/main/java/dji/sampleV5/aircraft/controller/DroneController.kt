@@ -42,6 +42,10 @@ import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 
+import dji.v5.manager.KeyManager
+import dji.sdk.keyvalue.key.RtkMobileStationKey
+import android.util.Log
+import dji.v5.manager.aircraft.virtualstick.VirtualStickManager
 
 object DroneController {
 
@@ -150,7 +154,7 @@ object DroneController {
      * The UI layer can also upgrade IDLE → HOVERING using FC telemetry (isFlying key).
      */
     enum class DroneStatus {
-        IDLE, TAKING_OFF, HOVERING, NAVIGATING, LANDING, RETURNING_HOME, MANUAL_OVERRIDE, ABORTING
+        IDLE, ARMING, DISARMING, TAKING_OFF, HOVERING, NAVIGATING, LANDING, RETURNING_HOME, MANUAL_OVERRIDE, ABORTING
     }
 
     interface DroneStatusListener {
@@ -387,6 +391,22 @@ object DroneController {
             override fun onSuccess() { }
             override fun onFailure(error: IDJIError) { /* SDK may report "already enabled" — not a real error */ }
         })
+    }
+
+    fun disableRTK() {
+        KeyManager.getInstance().setValue(
+            RtkMobileStationKey.KeyRTKEnable.create(),
+            false,
+            object : CommonCallbacks.CompletionCallback {
+                override fun onSuccess() {
+                    ToastUtils.showToast("Disable RTK onSuccess")
+                }
+
+                override fun onFailure(error: IDJIError) {
+                    ToastUtils.showToast("Disable RTK onFailure: ${error.description()}")
+                }
+            }
+        )
     }
 
     fun disableVirtualStick() {

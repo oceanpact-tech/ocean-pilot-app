@@ -84,6 +84,7 @@ import dji.sdk.keyvalue.value.gimbal.GimbalAngleRotation
 import dji.sdk.keyvalue.value.gimbal.GimbalAngleRotationMode
 import dji.sdk.keyvalue.key.RemoteControllerKey
 import dji.sdk.keyvalue.value.product.ProductType
+import dji.sdk.keyvalue.key.RtkMobileStationKey
 import dji.v5.manager.datacenter.MediaDataCenter
 import dji.v5.manager.interfaces.ICameraStreamManager
 import dji.v5.et.action
@@ -127,6 +128,9 @@ import kotlin.concurrent.thread
 import androidx.lifecycle.ViewModelProvider
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+
+import dji.sampleV5.aircraft.util.ToastUtils
+import dji.v5.manager.aircraft.virtualstick.VirtualStickManager
 
 /**
  * WildBridge Default Layout Activity
@@ -1043,6 +1047,8 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         }
         val (label, color) = when (resolved) {
             DroneController.DroneStatus.IDLE            -> Pair("IDLE",       0xFFAAAAAA.toInt())
+            DroneController.DroneStatus.ARMING          -> Pair("ARMED",      0xFFFFC107.toInt())
+            DroneController.DroneStatus.DISARMING       -> Pair("IDLE",       0xFFAAAAAA.toInt())
             DroneController.DroneStatus.TAKING_OFF      -> Pair("TAKEOFF",    0xFFFFC107.toInt())
             DroneController.DroneStatus.HOVERING        -> Pair("HOVER",      0xFF4CAF50.toInt())
             DroneController.DroneStatus.NAVIGATING      -> Pair("NAV",        0xFF2196F3.toInt())
@@ -2070,13 +2076,29 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
      * Mirrors the DJI system-status banner: ready when it reads "Ready to Go (GPS)",
      * i.e. [DJIDeviceStatus.NORMAL]. Any other status counts as not ready.
      */
-    private fun isReadyToTakeoff(): Boolean =
-        DeviceStatusManager.getInstance().getCurrentDJIDeviceStatus() == DJIDeviceStatus.NORMAL
+    private fun isReadyToTakeoff(): Boolean {
+        val status = DeviceStatusManager.getInstance().getCurrentDJIDeviceStatus()
+        if (status == DJIDeviceStatus.NORMAL ||
+            status == DJIDeviceStatus.NORMAL_RTK ||
+            status == DJIDeviceStatus.NORMAL_IN_THE_AIR ||
+            status == DJIDeviceStatus.NORMAL_IN_THE_AIR_RTK) {
+            return true
+        } else {
+            return false
+        }
+    }
 
     /** Reason the aircraft cannot take off, or "NONE" when ready. Mirrors the DJI status banner. */
     private fun getTakeoffBlockReason(): String {
         val status = DeviceStatusManager.getInstance().getCurrentDJIDeviceStatus()
-        return if (status == DJIDeviceStatus.NORMAL) "NONE" else status.name
+        if (status == DJIDeviceStatus.NORMAL ||
+            status == DJIDeviceStatus.NORMAL_RTK ||
+            status == DJIDeviceStatus.NORMAL_IN_THE_AIR ||
+            status == DJIDeviceStatus.NORMAL_IN_THE_AIR_RTK) {
+            return "NONE"
+        } else {
+            return status.name
+        }
     }
     private fun getTimeNeededToGoHome(): Int = goHomeAssessmentProcessor.value.timeNeededToGoHome
     private fun getTimeNeededToLand(): Int = timeNeededToLandProcessor.value
@@ -2173,10 +2195,18 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         val webRtcJson = lastWebRTCMetrics.toTelemetryJson()
         val lrfTargetJson = lrfTargetLocation?.toString() ?: "null"
 
-        return """{"droneName":"$droneName","speed":$speed,"heading":$heading,"attitude":$attitude,"location":$location,"lrfTarget":$lrfTargetJson,"phoneLocation":$phoneLocationJson,"webRtc":$webRtcJson,"gimbalAttitude":$gimbalAttitude,"gimbalJointAttitude":$gimbalJointAttitude,"zoomFl":$zoomFl,"hybridFl":$hybridFl,"opticalFl":$opticalFl,"zoomRatio":$zoomRatio,"batteryLevel":$batteryLevel,"satelliteCount":$satelliteCount,"homeLocation":$homeLocation,"distanceToHome":$distanceToHome,"waypointReached":$waypointReached,"waypointSeq":$waypointSeq,"intermediaryWaypointReached":$intermediaryWaypointReached,"yawReached":$yawReached,"yawSeq":$yawSeq,"altitudeReached":$altitudeReached,"altitudeSeq":$altitudeSeq,"isRecording":$isRecording,"homeSet":$homeSet,"remainingFlightTime":$remainingFlightTime,"timeNeededToGoHome":$timeNeededToGoHome,"timeNeededToLand":$timeNeededToLand,"totalTime":$totalTime,"maxRadiusCanFlyAndGoHome":$maxRadiusCanFlyAndGoHome,"remainingCharge":$remainingCharge,"batteryNeededToLand":$batteryNeededToLand,"batteryNeededToGoHome":$batteryNeededToGoHome,"seriousLowBatteryThreshold":$seriousLowBatteryThreshold,"lowBatteryThreshold":$lowBatteryThreshold,"flightMode":"$flightMode","readyToTakeoff":$readyToTakeoff,"takeoffBlockReason":"$takeoffBlockReason","isManualOverrideActive":${DroneController.isManualOverrideActive},"autoSensingActive":$isAutoSensingActive,"detectedTargets":${DetectedTarget.listToJsonArray(currentDetectedTargets)}}"""
+        // New parameters not added before
+        val isArmed = areMotorsOnKey.get(false)
+        val droneStatus = DroneController.droneStatus
+        val rtkStatus = KeyManager.getInstance().getValue(
+            RtkMobileStationKey.KeyRTKPositioningStatus.create()
+        )
+        val isVirtualStickEnabled = DroneController.virtualStickVM?.currentVirtualStickStateInfo?.value?.state?.isVirtualStickEnable ?: false
+
+        return """{"droneName":"$droneName","speed":$speed,"heading":$heading,"attitude":$attitude,"location":$location,"lrfTarget":$lrfTargetJson,"phoneLocation":$phoneLocationJson,"webRtc":$webRtcJson,"gimbalAttitude":$gimbalAttitude,"gimbalJointAttitude":$gimbalJointAttitude,"zoomFl":$zoomFl,"hybridFl":$hybridFl,"opticalFl":$opticalFl,"zoomRatio":$zoomRatio,"batteryLevel":$batteryLevel,"satelliteCount":$satelliteCount,"homeLocation":$homeLocation,"distanceToHome":$distanceToHome,"waypointReached":$waypointReached,"waypointSeq":$waypointSeq,"intermediaryWaypointReached":$intermediaryWaypointReached,"yawReached":$yawReached,"yawSeq":$yawSeq,"altitudeReached":$altitudeReached,"altitudeSeq":$altitudeSeq,"isRecording":$isRecording,"homeSet":$homeSet,"remainingFlightTime":$remainingFlightTime,"timeNeededToGoHome":$timeNeededToGoHome,"timeNeededToLand":$timeNeededToLand,"totalTime":$totalTime,"maxRadiusCanFlyAndGoHome":$maxRadiusCanFlyAndGoHome,"remainingCharge":$remainingCharge,"batteryNeededToLand":$batteryNeededToLand,"batteryNeededToGoHome":$batteryNeededToGoHome,"seriousLowBatteryThreshold":$seriousLowBatteryThreshold,"lowBatteryThreshold":$lowBatteryThreshold,"droneStatus":"$droneStatus","flightMode":"$flightMode","isArmed":$isArmed,"readyToTakeoff":$readyToTakeoff,"takeoffBlockReason":"$takeoffBlockReason","isVirtualStickActive":${isVirtualStickEnabled},"isManualOverrideActive":${DroneController.isManualOverrideActive},"autoSensingActive":$isAutoSensingActive,"detectedTargets":${DetectedTarget.listToJsonArray(currentDetectedTargets)},"rtkStatus":"$rtkStatus"}"""
     }
 
-    // ==================== HTTP Server ====================
+    // ==================== HTTP Server ===================='
 
     private inner class SimpleHttpServer(private val port: Int) {
         private var serverSocket: ServerSocket? = null
@@ -2394,6 +2424,14 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                 }
 
                 when (uri) {
+                    /*"/send/arm" -> {
+                        DroneController.startArming()
+                        "Arming command sent."
+                    }
+                    "/send/disarm" -> {
+                        DroneController.startDisarming()
+                        "Disarming command sent."
+                    }*/
                     "/send/takeoff" -> {
                         DroneController.startTakeOff()
                         "Takeoff command sent."
@@ -2408,6 +2446,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                     }
                     "/send/stick" -> {
                         if (DroneController.shouldRejectAutonomousCommand("stick")) {
+                            ToastUtils.showToast("ERROR: Manual override active.")
                             return "REJECTED: Manual override active. Deactivate manual override first."
                         }
                         val cmd = postData.split(",")
@@ -2503,7 +2542,11 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                         DroneController.enableVirtualStick()
                         "Received: enableVirtualStick"
                     }
-                    "/send/camera/startRecording" -> {
+                    "/send/disableRTK" -> {
+                        DroneController.disableRTK()
+                        "Disable RTK command sent."
+                    }
+                        "/send/camera/startRecording" -> {
                         startRecording.action()
                         "Received: camera start recording"
                     }
