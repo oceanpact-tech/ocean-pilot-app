@@ -204,10 +204,29 @@
             android:switchMinWidth="44dp"
             android:background="@drawable/uxsdk_background_black_rectangle"
             app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintBottom_toTopOf="@+id/text_drone_name"
+            app:layout_constraintBottom_toTopOf="@+id/sw_virtual_stick"
             android:layout_marginStart="16dp"
             android:layout_marginBottom="4dp"
             tools:ignore="HardcodedText" />
+
+        <!-- Virtual Stick toggle - OFF by default -->
+        <Switch
+            android:id="@+id/sw_virtual_stick"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="V-STICK"
+            android:textColor="#FFAAAAAA"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:padding="4dp"
+            android:checked="false"
+            android:switchMinWidth="40dp"
+            android:background="@drawable/uxsdk_background_black_rectangle"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintBottom_toTopOf="@+id/text_drone_name"
+            android:layout_marginStart="16dp"
+            android:layout_marginBottom="4dp"
+            tools:ignore="HardcodedText,UseSwitchCompatOrMaterialXml" />
 
         <TextView
             android:id="@+id/text_drone_name"

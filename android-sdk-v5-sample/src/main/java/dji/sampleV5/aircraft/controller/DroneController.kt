@@ -393,6 +393,15 @@ object DroneController {
         })
     }
 
+    fun disableVirtualStick() {
+        // Cancel any active control loop first
+        cancelActiveControlLoop()
+        virtualStickVM?.disableVirtualStick(object : CommonCallbacks.CompletionCallback {
+            override fun onSuccess() { }
+            override fun onFailure(error: IDJIError) { /* SDK may report "already disabled" — not a real error */ }
+        })
+    }
+
     fun disableRTK() {
         KeyManager.getInstance().setValue(
             RtkMobileStationKey.KeyRTKEnable.create(),
@@ -407,15 +416,6 @@ object DroneController {
                 }
             }
         )
-    }
-
-    fun disableVirtualStick() {
-        // Cancel any active control loop first
-        cancelActiveControlLoop()
-        virtualStickVM?.disableVirtualStick(object : CommonCallbacks.CompletionCallback {
-            override fun onSuccess() { }
-            override fun onFailure(error: IDJIError) { /* SDK may report "already disabled" — not a real error */ }
-        })
     }
 
     /**

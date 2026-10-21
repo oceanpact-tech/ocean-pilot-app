@@ -345,6 +345,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
     private var gimbalJointAttitudeKey: DJIKey<Attitude> = GimbalKey.KeyGimbalJointAttitude.create()
     private val compassHeadKey: DJIKey<Double> = FlightControllerKey.KeyCompassHeading.create()
     private val homeLocationKey: DJIKey<LocationCoordinate2D> = FlightControllerKey.KeyHomeLocation.create()
+    private val homeAltitudeKey: DJIKey<Double> = FlightControllerKey.KeyTakeoffLocationAltitude.create()
     private val flightSpeedKey: DJIKey<Velocity3D> = FlightControllerKey.KeyAircraftVelocity.create()
     private val attitudeKey: DJIKey<Attitude> = FlightControllerKey.KeyAircraftAttitude.create()
     private val cameraZoomFocalLengthKey: DJIKey<Int> = CameraKey.KeyCameraZoomFocalLength.create()
@@ -422,6 +423,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
 
         // Setup Manual Override checkbox
         setupManualOverrideCheckbox()
+        setupVirtualStickSwitch()
 
         // Setup AI Detection (AutoSensing) toggle & overlay
         setupAutoSensingToggle()
@@ -514,6 +516,55 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                 else DroneController.deactivateManualOverride()
                 updateManualOverrideUI()
             }
+        }
+
+        // Lock V-Stick sw
+        findViewById<Switch>(R.id.sw_virtual_stick)?.apply {
+            if (isManual) {
+                isChecked = false
+                isEnabled = false
+                setTextColor(0xFFAAAAAA.toInt())
+            } else {
+                isEnabled = true
+            }
+        }
+    }
+
+    private fun setupVirtualStickSwitch() {
+        val sw = findViewById<Switch>(R.id.sw_virtual_stick) ?: return
+
+        virtualStickVM.currentVirtualStickStateInfo.observe(this) { stateInfo ->
+            val isEnabled = stateInfo?.state?.isVirtualStickEnable == true
+            updateVirtualStickUI(isEnabled)
+            rebuildTelemetryCache()
+        }
+
+        sw.setOnCheckedChangeListener { buttonView, isChecked ->
+            if (!buttonView.isPressed) return@setOnCheckedChangeListener
+
+            if (isChecked) {
+                if (DroneController.isManualOverrideActive) {
+                    buttonView.isChecked = false
+                    ToastUtils.showToast("V-Stick blocked: Manual override active.")
+                    return@setOnCheckedChangeListener
+                }
+                DroneController.enableVirtualStick()
+            } else {
+                DroneController.disableVirtualStick()
+            }
+        }
+    }
+
+    private fun updateVirtualStickUI(isEnabled: Boolean) {
+
+        val isManual = DroneController.isManualOverrideActive
+        val effectiveEnabled = isEnabled && !isManual
+        val color = if (effectiveEnabled) 0xFF00E676.toInt() else 0xFFAAAAAA.toInt()
+
+        findViewById<Switch>(R.id.sw_virtual_stick)?.let { sw ->
+            sw.isChecked = effectiveEnabled
+            sw.isEnabled = !isManual
+            sw.setTextColor(color)
         }
     }
 
@@ -2062,6 +2113,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
     private fun getGimbalJointAttitude(): Attitude = gimbalJointAttitudeKey.get(Attitude(0.0, 0.0, 0.0))
     private fun getHeading(): Double = compassHeadKey.get(0.0)
     private fun getHomeLocation(): LocationCoordinate2D = homeLocationKey.get(LocationCoordinate2D())
+    private fun getHomeAltitude(): Double = homeAltitudeKey.get(0.0)
     private fun getSpeed(): Velocity3D = flightSpeedKey.get(Velocity3D(0.0, 0.0, 0.0))
     private fun getAttitude(): Attitude = attitudeKey.get(Attitude(0.0, 0.0, 0.0))
     private fun getCameraZoomFocalLength(): Int = cameraZoomFocalLengthKey.get(-1)
@@ -2081,7 +2133,8 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         if (status == DJIDeviceStatus.NORMAL ||
             status == DJIDeviceStatus.NORMAL_RTK ||
             status == DJIDeviceStatus.NORMAL_IN_THE_AIR ||
-            status == DJIDeviceStatus.NORMAL_IN_THE_AIR_RTK) {
+            status == DJIDeviceStatus.NORMAL_IN_THE_AIR_RTK ||
+            status == DJIDeviceStatus.IN_NFZ_MAX_HEIGHT) {
             return true
         } else {
             return false
@@ -2094,7 +2147,8 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         if (status == DJIDeviceStatus.NORMAL ||
             status == DJIDeviceStatus.NORMAL_RTK ||
             status == DJIDeviceStatus.NORMAL_IN_THE_AIR ||
-            status == DJIDeviceStatus.NORMAL_IN_THE_AIR_RTK) {
+            status == DJIDeviceStatus.NORMAL_IN_THE_AIR_RTK ||
+            status == DJIDeviceStatus.IN_NFZ_MAX_HEIGHT) {
             return "NONE"
         } else {
             return status.name
@@ -2156,6 +2210,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         val batteryLevel = getBatteryLevel()
         val satelliteCount = getSatelliteCount()
         val homeLocation = getHomeLocation()
+        val homeAltitude = getHomeAltitude()
         val distanceToHome = DroneController.calculateDistance(
             location.latitude, location.longitude,
             homeLocation.latitude, homeLocation.longitude
@@ -2203,7 +2258,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         )
         val isVirtualStickEnabled = DroneController.virtualStickVM?.currentVirtualStickStateInfo?.value?.state?.isVirtualStickEnable ?: false
 
-        return """{"droneName":"$droneName","speed":$speed,"heading":$heading,"attitude":$attitude,"location":$location,"lrfTarget":$lrfTargetJson,"phoneLocation":$phoneLocationJson,"webRtc":$webRtcJson,"gimbalAttitude":$gimbalAttitude,"gimbalJointAttitude":$gimbalJointAttitude,"zoomFl":$zoomFl,"hybridFl":$hybridFl,"opticalFl":$opticalFl,"zoomRatio":$zoomRatio,"batteryLevel":$batteryLevel,"satelliteCount":$satelliteCount,"homeLocation":$homeLocation,"distanceToHome":$distanceToHome,"waypointReached":$waypointReached,"waypointSeq":$waypointSeq,"intermediaryWaypointReached":$intermediaryWaypointReached,"yawReached":$yawReached,"yawSeq":$yawSeq,"altitudeReached":$altitudeReached,"altitudeSeq":$altitudeSeq,"isRecording":$isRecording,"homeSet":$homeSet,"remainingFlightTime":$remainingFlightTime,"timeNeededToGoHome":$timeNeededToGoHome,"timeNeededToLand":$timeNeededToLand,"totalTime":$totalTime,"maxRadiusCanFlyAndGoHome":$maxRadiusCanFlyAndGoHome,"remainingCharge":$remainingCharge,"batteryNeededToLand":$batteryNeededToLand,"batteryNeededToGoHome":$batteryNeededToGoHome,"seriousLowBatteryThreshold":$seriousLowBatteryThreshold,"lowBatteryThreshold":$lowBatteryThreshold,"droneStatus":"$droneStatus","flightMode":"$flightMode","isArmed":$isArmed,"readyToTakeoff":$readyToTakeoff,"takeoffBlockReason":"$takeoffBlockReason","isVirtualStickActive":${isVirtualStickEnabled},"isManualOverrideActive":${DroneController.isManualOverrideActive},"autoSensingActive":$isAutoSensingActive,"detectedTargets":${DetectedTarget.listToJsonArray(currentDetectedTargets)},"rtkStatus":"$rtkStatus"}"""
+        return """{"droneName":"$droneName","speed":$speed,"heading":$heading,"attitude":$attitude,"location":$location,"lrfTarget":$lrfTargetJson,"phoneLocation":$phoneLocationJson,"webRtc":$webRtcJson,"gimbalAttitude":$gimbalAttitude,"gimbalJointAttitude":$gimbalJointAttitude,"zoomFl":$zoomFl,"hybridFl":$hybridFl,"opticalFl":$opticalFl,"zoomRatio":$zoomRatio,"batteryLevel":$batteryLevel,"satelliteCount":$satelliteCount,"homeLocation":$homeLocation,"homeAltitude":${homeAltitude},"distanceToHome":$distanceToHome,"waypointReached":$waypointReached,"waypointSeq":$waypointSeq,"intermediaryWaypointReached":$intermediaryWaypointReached,"yawReached":$yawReached,"yawSeq":$yawSeq,"altitudeReached":$altitudeReached,"altitudeSeq":$altitudeSeq,"isRecording":$isRecording,"homeSet":$homeSet,"remainingFlightTime":$remainingFlightTime,"timeNeededToGoHome":$timeNeededToGoHome,"timeNeededToLand":$timeNeededToLand,"totalTime":$totalTime,"maxRadiusCanFlyAndGoHome":$maxRadiusCanFlyAndGoHome,"remainingCharge":$remainingCharge,"batteryNeededToLand":$batteryNeededToLand,"batteryNeededToGoHome":$batteryNeededToGoHome,"seriousLowBatteryThreshold":$seriousLowBatteryThreshold,"lowBatteryThreshold":$lowBatteryThreshold,"droneStatus":"$droneStatus","flightMode":"$flightMode","isArmed":$isArmed,"readyToTakeoff":$readyToTakeoff,"takeoffBlockReason":"$takeoffBlockReason","isVirtualStickActive":${isVirtualStickEnabled},"isManualOverrideActive":${DroneController.isManualOverrideActive},"autoSensingActive":$isAutoSensingActive,"detectedTargets":${DetectedTarget.listToJsonArray(currentDetectedTargets)},"rtkStatus":"$rtkStatus"}"""
     }
 
     // ==================== HTTP Server ===================='
@@ -2424,14 +2479,6 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                 }
 
                 when (uri) {
-                    /*"/send/arm" -> {
-                        DroneController.startArming()
-                        "Arming command sent."
-                    }
-                    "/send/disarm" -> {
-                        DroneController.startDisarming()
-                        "Disarming command sent."
-                    }*/
                     "/send/takeoff" -> {
                         DroneController.startTakeOff()
                         "Takeoff command sent."
@@ -2536,11 +2583,17 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                         "Received: abortAll"
                     }
                     "/send/enableVirtualStick" -> {
-                        if (DroneController.shouldRejectAutonomousCommand("enableVirtualStick")) {
-                            return "REJECTED: Manual override active. Deactivate manual override first."
+                        val cmd = postData.toBoolean()
+                        if (cmd) {
+                            if (DroneController.shouldRejectAutonomousCommand("enableVirtualStick")) {
+                                return "REJECTED: Manual override active. Deactivate manual override first."
+                            }
+                            DroneController.enableVirtualStick()
+                            "Received: enableVirtualStick(true)"
+                        } else {
+                            DroneController.disableVirtualStick()
+                            "Received: enableVirtualStick(false)"
                         }
-                        DroneController.enableVirtualStick()
-                        "Received: enableVirtualStick"
                     }
                     "/send/disableRTK" -> {
                         DroneController.disableRTK()
