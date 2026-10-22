@@ -2568,6 +2568,14 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                         val seq = DroneController.gotoAltitude(targetAltitude)
                         "ALTITUDE_ACCEPTED seq=$seq Altitude: $targetAltitude"
                     }
+                    "/send/gotoAltitudeByPosition" -> {
+                        if (DroneController.shouldRejectAutonomousCommand("gotoAltitude")) {
+                            return "REJECTED: Manual override active. Deactivate manual override first."
+                        }
+                        val targetAltitude = postData.split(",")[0].toDouble()
+                        val seq = DroneController.gotoAltitudeByPosition(targetAltitude)
+                        "ALTITUDE_ACCEPTED seq=$seq Altitude: $targetAltitude"
+                    }
                     "/send/camera/zoom" -> {
                         val targetZoom = postData.toDouble()
                         zoomKey.set(targetZoom)

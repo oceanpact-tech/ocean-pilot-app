@@ -695,7 +695,7 @@ object DroneController {
     fun gotoAltitude(targetAltitude: Double): Long {
         stopCurrentMission()
         // Start new control loop session
-        val loopId = startNewControlLoopSession()
+        val loopId = startNewControlLoopSession() // The droneState will be updated to NAVIGATING
 
         val seq = _altitudeSeq.incrementAndGet()
 
@@ -710,7 +710,7 @@ object DroneController {
         _isAltitudeReached = false
         val controlLoopHandler = Handler(Looper.getMainLooper())
         val updateInterval = 100L // Update every 100 ms
-        
+
         // Capture initial yaw ONCE to prevent oscillation from compass noise
         val initialYaw = getHeading()
 
@@ -733,6 +733,9 @@ object DroneController {
                     setStick(0F, 0F, 0F, 0F)
                     _isAltitudeReached = true
                     controlLoopEnabled = false
+                    setDroneStatus(DroneStatus.IDLE) // Return to HOVERING state
+                    disableVirtualStick()
+                    virtualStickVM?.disableVirtualStickAdvancedMode()
                     return
                 }
 
@@ -764,7 +767,74 @@ object DroneController {
                 controlLoopHandler.postDelayed(this, updateInterval)
             }
         }
-        
+
+        // Store references to allow cancellation
+        activeControlLoopHandler = controlLoopHandler
+        activeControlLoopRunnable = runnable
+        controlLoopHandler.post(runnable)
+        return seq
+    }
+
+    fun gotoAltitudeByPosition(targetAltitude: Double): Long {
+        stopCurrentMission()
+        // Start new control loop session
+        val loopId = startNewControlLoopSession()
+
+        val seq = _altitudeSeq.incrementAndGet()
+
+        // Enable Virtual Stick and advanced mode
+        virtualStickVM?.enableVirtualStick(object : CommonCallbacks.CompletionCallback {
+            override fun onSuccess() { }
+            override fun onFailure(error: IDJIError) { /* SDK may report "already enabled" */ }
+        })
+        virtualStickVM?.enableVirtualStickAdvancedMode()
+
+        _isAltitudeReached = false
+        val controlLoopHandler = Handler(Looper.getMainLooper())
+        val updateInterval = 100L // Update every 100 ms
+
+        // Capture initial yaw ONCE to prevent oscillation from compass noise
+        val initialYaw = getHeading()
+
+        val runnable = object : Runnable {
+            override fun run() {
+                // CHECK IF WE SHOULD STILL BE RUNNING
+                if (!shouldControlLoopContinue(loopId)) {
+                    setStick(0F, 0F, 0F, 0F)
+                    return
+                }
+
+                val currentPosition = getLocation3D()
+                val distanceToAltitude = abs(targetAltitude - currentPosition.altitude)
+
+                if (distanceToAltitude < 0.2) { // Stop if close enough to the target altitude
+                    setStick(0F, 0F, 0F, 0F)
+                    _isAltitudeReached = true
+                    controlLoopEnabled = false
+                    setDroneStatus(DroneStatus.IDLE)
+                    disableVirtualStick()
+                    virtualStickVM?.disableVirtualStickAdvancedMode()
+                    return
+                }
+
+                val flightControlParam = VirtualStickFlightControlParam().apply {
+                    this.pitch = 0.0
+                    this.roll = 0.0
+                    this.yaw = initialYaw
+                    this.verticalThrottle = targetAltitude
+                    this.verticalControlMode = VerticalControlMode.POSITION
+                    this.rollPitchControlMode = RollPitchControlMode.VELOCITY
+                    this.yawControlMode = YawControlMode.ANGLE
+                    this.rollPitchCoordinateSystem = FlightCoordinateSystem.BODY
+                }
+
+                virtualStickVM?.sendVirtualStickAdvancedParam(flightControlParam)
+
+                // Schedule the next update
+                controlLoopHandler.postDelayed(this, updateInterval)
+            }
+        }
+
         // Store references to allow cancellation
         activeControlLoopHandler = controlLoopHandler
         activeControlLoopRunnable = runnable
