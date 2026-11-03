@@ -45,12 +45,24 @@ import java.util.zip.ZipFile
 import dji.v5.manager.KeyManager
 import dji.sdk.keyvalue.key.RtkMobileStationKey
 import android.util.Log
+import com.dji.wpmzsdk.common.utils.kml.createMapping3DWaylineModel
 import dji.v5.manager.aircraft.virtualstick.VirtualStickManager
 
 object DroneController {
 
     private var basicAircraftControlVM: BasicAircraftControlVM? = null
     var virtualStickVM: VirtualStickVM? = null
+
+    // ==================== DJI Native System ====================
+    private var currentTargetKmzWaypointIndex: Int = -1
+
+    fun getCurrentTargetKmzWaypointIndex(): Int {
+        return currentTargetKmzWaypointIndex
+    }
+
+    fun resetCurrentTargetKmzWaypointIndex() {
+        currentTargetKmzWaypointIndex = -1
+    }
 
     // ==================== Manual Override System ====================
     // When true, the pilot has taken manual control via RC sticks.
@@ -177,6 +189,9 @@ object DroneController {
     fun init(basicVM: BasicAircraftControlVM, stickVM: VirtualStickVM ) {
         basicAircraftControlVM = basicVM
         virtualStickVM = stickVM
+        WaypointMissionManager.getInstance().addWaylineExecutingInfoListener { executingInfo ->
+            currentTargetKmzWaypointIndex = executingInfo.currentWaypointIndex
+        }
     }
 
     fun destroy() {
@@ -551,6 +566,69 @@ object DroneController {
                 ToastUtils.showToast("start takeOff onFailure, $error")
             }
         })
+    }
+
+    fun startTakeoffToTargetHeight(height: Double) {
+        val currentPosition = getLocation3D()
+        val lat = currentPosition.latitude
+        val lon = currentPosition.longitude
+
+        // KMZ Autonomy requires valid GPS.
+        if (lat == 0.0 && lon == 0.0) {
+            ToastUtils.showToast("start takeOff onFailure: Invalid GPS")
+            return
+        }
+
+        // Stop any running mission
+        if (lastMissionNameNoExt.isNotEmpty()) {
+            WaypointMissionManager.getInstance().stopMission(lastMissionNameNoExt, object : CommonCallbacks.CompletionCallback {
+                override fun onSuccess() {}
+                override fun onFailure(error: IDJIError) {}
+            })
+        }
+
+        // Init KMZManager
+        WPMZManager.getInstance().init(ContextUtil.getContext())
+
+        // Create waypoint list
+        val wpModels = ArrayList<WaypointInfoModel>()
+        wpModels.add(createWaypointFromLatLon(lat, lon, height, 0))
+        wpModels.add(createWaypointFromLatLon(lat, lon, height, 0))
+
+        // Configure mission
+        val mission = createWaylineMission()
+        val config = createMissionConfig(WaylineFinishedAction.NO_ACTION, WaylineExitOnRCLostAction.GO_BACK)
+
+        config.securityTakeOffHeight = height
+        config.isSecurityTakeOffHeightSet = true
+
+        val template = createTemplate(wpModels, 2.0)
+
+        val missionName = generateTrajectoryName()
+        val kmzOutPath = getKmzDirectory() + missionName + ".kmz"
+        WPMZManager.getInstance().generateKMZFile(kmzOutPath, mission, config, template)
+
+        // Send mission to aircraft
+        pushKmzToAircraft(
+            kmzPath = kmzOutPath,
+            onProgress = null,
+            onSuccess = {
+                startMission(
+                    missionNameNoExt = missionName,
+                    kmzPath = kmzOutPath,
+                    onSuccess = {
+                        setDroneStatus(DroneStatus.TAKING_OFF)
+                        ToastUtils.showToast("start takeoff onSuccess. Target height: ${height}m.")
+                    },
+                    onFailure = { error ->
+                        ToastUtils.showToast("start takeoff onFailure.")
+                    }
+                )
+            },
+            onFailure = { error ->
+                ToastUtils.showToast("send KMZ to aircraft onFailure: ${error.description()}")
+            }
+        )
     }
 
     fun startLanding() {
@@ -1702,6 +1780,8 @@ object DroneController {
         lastMissionNameNoExt = missionName
         lastMissionKmzPath = kmzOutPath
 
+        resetCurrentTargetKmzWaypointIndex()
+
         // Push to aircraft then start
         WaypointMissionManager.getInstance().pushKMZFileToAircraft(kmzOutPath, object :
             CommonCallbacks.CompletionCallbackWithProgress<Double> {
@@ -1730,6 +1810,7 @@ object DroneController {
     }
 
     fun endMission() {
+        resetCurrentTargetKmzWaypointIndex()
         if (lastMissionNameNoExt.isEmpty()) {
             // Try to pause anyway
             WaypointMissionManager.getInstance().pauseMission(object : CommonCallbacks.CompletionCallback {

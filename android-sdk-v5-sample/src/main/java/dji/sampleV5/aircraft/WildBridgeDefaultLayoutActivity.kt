@@ -2257,8 +2257,11 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             RtkMobileStationKey.KeyRTKPositioningStatus.create()
         )
         val isVirtualStickEnabled = DroneController.virtualStickVM?.currentVirtualStickStateInfo?.value?.state?.isVirtualStickEnable ?: false
+        var currentTargetWaypointIndex = DroneController.getCurrentTargetKmzWaypointIndex()
 
-        return """{"droneName":"$droneName","speed":$speed,"heading":$heading,"attitude":$attitude,"location":$location,"lrfTarget":$lrfTargetJson,"phoneLocation":$phoneLocationJson,"webRtc":$webRtcJson,"gimbalAttitude":$gimbalAttitude,"gimbalJointAttitude":$gimbalJointAttitude,"zoomFl":$zoomFl,"hybridFl":$hybridFl,"opticalFl":$opticalFl,"zoomRatio":$zoomRatio,"batteryLevel":$batteryLevel,"satelliteCount":$satelliteCount,"homeLocation":$homeLocation,"homeAltitude":${homeAltitude},"distanceToHome":$distanceToHome,"waypointReached":$waypointReached,"waypointSeq":$waypointSeq,"intermediaryWaypointReached":$intermediaryWaypointReached,"yawReached":$yawReached,"yawSeq":$yawSeq,"altitudeReached":$altitudeReached,"altitudeSeq":$altitudeSeq,"isRecording":$isRecording,"homeSet":$homeSet,"remainingFlightTime":$remainingFlightTime,"timeNeededToGoHome":$timeNeededToGoHome,"timeNeededToLand":$timeNeededToLand,"totalTime":$totalTime,"maxRadiusCanFlyAndGoHome":$maxRadiusCanFlyAndGoHome,"remainingCharge":$remainingCharge,"batteryNeededToLand":$batteryNeededToLand,"batteryNeededToGoHome":$batteryNeededToGoHome,"seriousLowBatteryThreshold":$seriousLowBatteryThreshold,"lowBatteryThreshold":$lowBatteryThreshold,"droneStatus":"$droneStatus","flightMode":"$flightMode","isArmed":$isArmed,"readyToTakeoff":$readyToTakeoff,"takeoffBlockReason":"$takeoffBlockReason","isVirtualStickActive":${isVirtualStickEnabled},"isManualOverrideActive":${DroneController.isManualOverrideActive},"autoSensingActive":$isAutoSensingActive,"detectedTargets":${DetectedTarget.listToJsonArray(currentDetectedTargets)},"rtkStatus":"$rtkStatus"}"""
+        var removed = """"lrfTarget":$lrfTargetJson,"phoneLocation":$phoneLocationJson,"webRtc":$webRtcJson,"gimbalAttitude":$gimbalAttitude,"gimbalJointAttitude":$gimbalJointAttitude,"zoomFl":$zoomFl,"hybridFl":$hybridFl,"opticalFl":$opticalFl,"zoomRatio":$zoomRatio,"autoSensingActive":$isAutoSensingActive,"detectedTargets":${DetectedTarget.listToJsonArray(currentDetectedTargets)},"""
+
+        return """{"droneName":"$droneName","speed":$speed,"heading":$heading,"attitude":$attitude,"location":$location,"batteryLevel":$batteryLevel,"satelliteCount":$satelliteCount,"homeLocation":$homeLocation,"homeAltitude":${homeAltitude},"distanceToHome":$distanceToHome,"waypointReached":$waypointReached,"waypointSeq":$waypointSeq,"intermediaryWaypointReached":$intermediaryWaypointReached,"yawReached":$yawReached,"yawSeq":$yawSeq,"altitudeReached":$altitudeReached,"altitudeSeq":$altitudeSeq,"isRecording":$isRecording,"homeSet":$homeSet,"remainingFlightTime":$remainingFlightTime,"timeNeededToGoHome":$timeNeededToGoHome,"timeNeededToLand":$timeNeededToLand,"totalTime":$totalTime,"maxRadiusCanFlyAndGoHome":$maxRadiusCanFlyAndGoHome,"remainingCharge":$remainingCharge,"batteryNeededToLand":$batteryNeededToLand,"batteryNeededToGoHome":$batteryNeededToGoHome,"seriousLowBatteryThreshold":$seriousLowBatteryThreshold,"lowBatteryThreshold":$lowBatteryThreshold,"droneStatus":"$droneStatus","flightMode":"$flightMode","isArmed":$isArmed,"readyToTakeoff":$readyToTakeoff,"takeoffBlockReason":"$takeoffBlockReason","isVirtualStickActive":${isVirtualStickEnabled},"isManualOverrideActive":${DroneController.isManualOverrideActive},"rtkStatus":"$rtkStatus","currentTargetWaypointIndex":${currentTargetWaypointIndex}}"""
     }
 
     // ==================== HTTP Server ===================='
@@ -2482,6 +2485,12 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                     "/send/takeoff" -> {
                         DroneController.startTakeOff()
                         "Takeoff command sent."
+                    }
+                    "/send/takeoffToTargetHeight" -> {
+                        val cmd = postData.split(",")
+                        val targetHeight = cmd[0].toDouble()
+                        DroneController.startTakeoffToTargetHeight(targetHeight)
+                        "Takeoff command sent. Target height = ${targetHeight}."
                     }
                     "/send/land" -> {
                         DroneController.startLanding()
