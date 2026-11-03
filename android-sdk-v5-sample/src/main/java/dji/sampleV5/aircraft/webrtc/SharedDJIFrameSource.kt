@@ -11,7 +11,10 @@ import dji.v5.manager.interfaces.ICameraStreamManager
 import org.webrtc.CapturerObserver
 import org.webrtc.NV21Buffer
 import org.webrtc.VideoFrame
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -81,6 +84,16 @@ class SharedDJIFrameSource(
     private var lastOutputHeight = 0
     private var lastMetricsTimestampNs = System.nanoTime()
     @Volatile private var lastError: String? = null
+
+    // Single-worker executor with a 1-slot queue (DiscardOldestPolicy) so DJI's camera
+    // callback thread is never blocked by NV21->I420 conversion, scaling, or WebRTC encoding,
+    // and stale frames never queue up to cause latency lag.
+    private val frameProcessorExecutor = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(1),
+        { r -> Thread(r, "DJI-WebRTC-FrameProc").apply { isDaemon = true } },
+        ThreadPoolExecutor.DiscardOldestPolicy()
+    )
 
     private val cameraStreamManager: ICameraStreamManager by lazy {
         MediaDataCenter.getInstance().cameraStreamManager
@@ -171,89 +184,112 @@ class SharedDJIFrameSource(
             format: ICameraStreamManager.FrameFormat
         ) {
             if (!isCapturing.get()) return
-            val singleObserver = if (observers.size == 1) observers.values.firstOrNull() else null
-            val currentObservers = if (singleObserver == null) observers.values.toList() else emptyList()
-            if (singleObserver == null && currentObservers.isEmpty()) return
+            if (observers.isEmpty()) return
 
-            try {
-                val timestampNs = System.nanoTime()
-                incomingFrameCounter.incrementAndGet()
-                inputFramesInWindow.incrementAndGet()
+            val timestampNs = System.nanoTime()
+            incomingFrameCounter.incrementAndGet()
+            inputFramesInWindow.incrementAndGet()
 
-                val previousSent = lastSentTimestampNs.get()
-                if (previousSent != 0L && (timestampNs - previousSent) < frameIntervalNs) {
-                    droppedFrameCounter.incrementAndGet()
-                    droppedFramesInWindow.incrementAndGet()
-                    maybeEmitMetrics(timestampNs)
-                    return
-                }
-                lastSentTimestampNs.set(timestampNs)
-
-                if (width != lastSourceWidth || height != lastSourceHeight) {
-                    lastSourceWidth = width
-                    lastSourceHeight = height
-                    Log.d(TAG, "Source: ${width}x${height}, Target: ${targetWidth}x${targetHeight}, Scale: $scaleToTarget")
-                }
-
-                val frameNumber = frameCounter.incrementAndGet()
-                synchronized(frameWaitLock) {
-                    frameWaitLock.notifyAll()
-                }
-                sentFramesInWindow.incrementAndGet()
-
-                val (outputWidth, outputHeight) = chooseOutputSize(width, height)
-                lastOutputWidth = outputWidth
-                lastOutputHeight = outputHeight
-
-                // Capture telemetry once and broadcast to all metadata listeners
-                val singleListener = if (metadataListeners.size == 1) metadataListeners.values.firstOrNull() else null
-                val currentListeners = if (singleListener == null) metadataListeners.values.toList() else emptyList()
-                if (singleListener != null || currentListeners.isNotEmpty()) {
-                    val metadata = TelemetryProvider.captureMetadata(
-                        frameNumber = frameNumber,
-                        timestampNs = timestampNs,
-                        frameWidth = outputWidth,
-                        frameHeight = outputHeight,
-                        droneName = droneName
-                    )
-                    if (singleListener != null) {
-                        singleListener.onFrameMetadata(metadata)
-                    } else {
-                        currentListeners.forEach { it.onFrameMetadata(metadata) }
-                    }
-                }
-
-                // Create NV21 buffer and scale ONCE
-                val buffer = NV21Buffer(frameData, width, height, null)
-
-                val needsScale = scaleToTarget && (width != outputWidth || height != outputHeight)
-                val outputBuffer = if (needsScale) {
-                    val scaled = buffer.cropAndScale(0, 0, width, height, outputWidth, outputHeight)
-                    buffer.release()
-                    scaled
-                } else {
-                    buffer
-                }
-
-                // Broadcast the same VideoFrame to every observer.
-                // Retain once per extra observer; the first consumer uses the initial ref.
-                val videoFrame = VideoFrame(outputBuffer, 0, timestampNs)
-                if (singleObserver != null) {
-                    singleObserver.onFrameCaptured(videoFrame)
-                } else {
-                    val extra = currentObservers.size - 1
-                    repeat(extra) { videoFrame.retain() }
-                    currentObservers.forEach { it.onFrameCaptured(videoFrame) }
-                }
-                videoFrame.release()
-                processingTimeNsInWindow.addAndGet(System.nanoTime() - timestampNs)
+            val previousSent = lastSentTimestampNs.get()
+            if (previousSent != 0L && (timestampNs - previousSent) < frameIntervalNs) {
+                droppedFrameCounter.incrementAndGet()
+                droppedFramesInWindow.incrementAndGet()
                 maybeEmitMetrics(timestampNs)
-
-            } catch (e: Exception) {
-                processingErrorCounter.incrementAndGet()
-                lastError = e.message
-                Log.e(TAG, "Error processing frame: ${e.message}", e)
+                return
             }
+            lastSentTimestampNs.set(timestampNs)
+
+            // Copy only the active NV21 byte range and offload scaling/encoding to the single-slot worker
+            // so the DJI camera callback returns immediately and stale frames never queue up.
+            val nv21Bytes = if (offset == 0 && length == frameData.size) {
+                frameData.clone()
+            } else {
+                frameData.copyOfRange(offset, (offset + length).coerceAtMost(frameData.size))
+            }
+
+            frameProcessorExecutor.execute {
+                processFrameAsync(nv21Bytes, width, height, timestampNs)
+            }
+        }
+    }
+
+    private fun processFrameAsync(
+        frameData: ByteArray,
+        width: Int,
+        height: Int,
+        timestampNs: Long
+    ) {
+        if (!isCapturing.get()) return
+        val singleObserver = if (observers.size == 1) observers.values.firstOrNull() else null
+        val currentObservers = if (singleObserver == null) observers.values.toList() else emptyList()
+        if (singleObserver == null && currentObservers.isEmpty()) return
+
+        try {
+            val procStartNs = System.nanoTime()
+            if (width != lastSourceWidth || height != lastSourceHeight) {
+                lastSourceWidth = width
+                lastSourceHeight = height
+                Log.d(TAG, "Source: ${width}x${height}, Target: ${targetWidth}x${targetHeight}, Scale: $scaleToTarget")
+            }
+
+            val frameNumber = frameCounter.incrementAndGet()
+            synchronized(frameWaitLock) {
+                frameWaitLock.notifyAll()
+            }
+            sentFramesInWindow.incrementAndGet()
+
+            val (outputWidth, outputHeight) = chooseOutputSize(width, height)
+            lastOutputWidth = outputWidth
+            lastOutputHeight = outputHeight
+
+            // Capture telemetry once and broadcast to all metadata listeners
+            val singleListener = if (metadataListeners.size == 1) metadataListeners.values.firstOrNull() else null
+            val currentListeners = if (singleListener == null) metadataListeners.values.toList() else emptyList()
+            if (singleListener != null || currentListeners.isNotEmpty()) {
+                val metadata = TelemetryProvider.captureMetadata(
+                    frameNumber = frameNumber,
+                    timestampNs = timestampNs,
+                    frameWidth = outputWidth,
+                    frameHeight = outputHeight,
+                    droneName = droneName
+                )
+                if (singleListener != null) {
+                    singleListener.onFrameMetadata(metadata)
+                } else {
+                    currentListeners.forEach { it.onFrameMetadata(metadata) }
+                }
+            }
+
+            // Create NV21 buffer and scale ONCE
+            val buffer = NV21Buffer(frameData, width, height, null)
+
+            val needsScale = scaleToTarget && (width != outputWidth || height != outputHeight)
+            val outputBuffer = if (needsScale) {
+                val scaled = buffer.cropAndScale(0, 0, width, height, outputWidth, outputHeight)
+                buffer.release()
+                scaled
+            } else {
+                buffer
+            }
+
+            // Broadcast the same VideoFrame to every observer.
+            // Retain once per extra observer; the first consumer uses the initial ref.
+            val videoFrame = VideoFrame(outputBuffer, 0, timestampNs)
+            if (singleObserver != null) {
+                singleObserver.onFrameCaptured(videoFrame)
+            } else {
+                val extra = currentObservers.size - 1
+                repeat(extra) { videoFrame.retain() }
+                currentObservers.forEach { it.onFrameCaptured(videoFrame) }
+            }
+            videoFrame.release()
+            processingTimeNsInWindow.addAndGet(System.nanoTime() - procStartNs)
+            maybeEmitMetrics(System.nanoTime())
+
+        } catch (e: Exception) {
+            processingErrorCounter.incrementAndGet()
+            lastError = e.message
+            Log.e(TAG, "Error processing frame: ${e.message}", e)
         }
     }
 
@@ -428,6 +464,7 @@ class SharedDJIFrameSource(
         observers.clear()
         metadataListeners.clear()
         metricsListener = null
+        frameProcessorExecutor.shutdownNow()
         Log.d(TAG, "SharedDJIFrameSource disposed")
     }
 }

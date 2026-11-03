@@ -161,7 +161,6 @@ class WebRTCStreamer(
             whipPublisher = null
         }
 
-        TelemetryProvider.startListening()
         currentWhipUrl = whipUrl
 
         val djiFrameSource = if (useMockVideo) null else getOrCreateSharedSource()

@@ -34,7 +34,7 @@ class WhipPublisher(
 ) {
     companion object {
         private const val TAG = "WhipPublisher"
-        private const val ICE_GATHER_TIMEOUT_S = 10L
+        private const val ICE_GATHER_TIMEOUT_S = 2L
         private const val RECONNECT_BASE_DELAY_MS = 2000L
         private const val RECONNECT_MAX_DELAY_MS = 30000L
         private const val FIRST_FRAME_TIMEOUT_MS = 8_000L
@@ -184,13 +184,8 @@ class WhipPublisher(
             setEnabled(true)
         }
 
-        // 2. Create PeerConnection
-        val rtcConfig = PeerConnection.RTCConfiguration(
-            listOf(
-                PeerConnection.IceServer.builder("stun:stun.l.google.com:19302")
-                    .createIceServer()
-            )
-        ).apply {
+        // 2. Create PeerConnection (no external STUN needed on local LAN)
+        val rtcConfig = PeerConnection.RTCConfiguration(emptyList()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
         }
 

@@ -156,7 +156,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         private const val PREF_WEBRTC_FPS = "webrtc_fps"
         private const val PREF_WEBRTC_RESOLUTION = "webrtc_resolution"
         private const val PREF_MOCK_VIDEO_ENABLED = "mock_video_enabled"
-        private const val DEFAULT_WEBRTC_FPS = 10
+        private const val DEFAULT_WEBRTC_FPS = 30
         private const val DEFAULT_DRONE_NAME = "drone_1"
         private const val DISCOVERY_PORT = 30000
         private const val DISCOVERY_MSG = "DISCOVER_WILDBRIDGE"
@@ -177,8 +177,8 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         val bitrate: Int
     ) {
         AUTO("auto", "Auto / native", 0, 0, 6_000_000),
-        FULL_HD("1080p", "1080p", 1920, 1080, 8_000_000),
-        HD("720p", "720p", 1280, 720, 2_000_000),
+        FULL_HD("1080p", "1080p", 1920, 1080, 6_000_000),
+        HD("720p", "720p", 1280, 720, 3_500_000),
         SD("480p", "480p", 640, 480, 1_500_000);
 
         companion object {
