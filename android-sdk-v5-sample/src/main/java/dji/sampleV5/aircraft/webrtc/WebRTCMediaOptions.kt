@@ -19,10 +19,10 @@ data class WebRTCMediaOptions(
      * Cap sender bitrate according to target resolution.
      */
     fun senderBitrateBps(): Int = when {
-        usesSourceResolution -> minOf(videoBitrate, 6_000_000)
-        videoResolutionWidth >= 1920 || videoResolutionHeight >= 1080 -> minOf(videoBitrate, 6_000_000)
-        videoResolutionWidth >= 1280 || videoResolutionHeight >= 720 -> minOf(videoBitrate, 3_500_000)
-        else -> minOf(videoBitrate, 1_500_000)
+        usesSourceResolution -> minOf(videoBitrate, 3_500_000)
+        videoResolutionWidth >= 1920 || videoResolutionHeight >= 1080 -> minOf(videoBitrate, 3_500_000)
+        videoResolutionWidth >= 1280 || videoResolutionHeight >= 720 -> minOf(videoBitrate, 2_000_000)
+        else -> minOf(videoBitrate, 1_000_000)
     }
 
     companion object {
