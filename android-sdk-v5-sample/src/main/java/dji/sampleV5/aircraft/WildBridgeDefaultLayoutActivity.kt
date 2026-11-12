@@ -2513,23 +2513,38 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                         DroneController.setStick(lx, ly, rx, ry)
                         "Received: leftX: $lx, leftY: $ly, rightX: $rx, rightY: $ry"
                     }
-                    "/send/gimbal/rel_pitch" -> {
+                    "/send/gimbal/rel_position" -> {
                         val cmd = postData.split(",")
                         val roll = cmd[0].toDouble()
                         val pitch = cmd[1].toDouble()
                         val yaw = cmd[2].toDouble()
                         val rot = GimbalAngleRotation(
                             GimbalAngleRotationMode.RELATIVE_ANGLE,
-                            pitch, 0.0, 0.0, false, true, false, 0.1, false, 0
+                            pitch, roll, yaw, false, true, false, 0.1, false, 0
+                        )
+                        gimbalKey.action(rot)
+                        "Received: roll: $roll, pitch: $pitch, yaw: $yaw"
+                    }
+                    "/send/gimbal/rel_roll" -> {
+                        val roll = postData.toDouble()
+                        val rot = GimbalAngleRotation(
+                            GimbalAngleRotationMode.RELATIVE_ANGLE,
+                            0.0, roll, 0.0, true, false, true, 0.1, false, 0
+                        )
+                        gimbalKey.action(rot)
+                        "Received: relative roll: $roll"
+                    }
+                    "/send/gimbal/rel_pitch" -> {
+                        val pitch = postData.toDouble()
+                        val rot = GimbalAngleRotation(
+                            GimbalAngleRotationMode.RELATIVE_ANGLE,
+                            pitch, 0.0, 0.0, false, true, true, 0.1, false, 0
                         )
                         gimbalKey.action(rot)
                         "Received: relative pitch: $pitch"
                     }
                     "/send/gimbal/rel_yaw" -> {
-                        val cmd = postData.split(",")
-                        val roll = cmd[0].toDouble()
-                        val pitch = cmd[1].toDouble()
-                        val yaw = cmd[2].toDouble()
+                        val yaw = postData.toDouble()
                         val rot = GimbalAngleRotation(
                             GimbalAngleRotationMode.RELATIVE_ANGLE,
                             0.0, 0.0, yaw, true, true, false, 0.1, false, 0
@@ -2537,29 +2552,56 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                         gimbalKey.action(rot)
                         "Received: relative yaw: $yaw"
                     }
-                    "/send/gimbal/pitch" -> {
+                    "/send/gimbal/position" -> {
                         val cmd = postData.split(",")
                         val roll = cmd[0].toDouble()
                         val pitch = cmd[1].toDouble()
                         val yaw = cmd[2].toDouble()
                         val rot = GimbalAngleRotation(
                             GimbalAngleRotationMode.ABSOLUTE_ANGLE,
-                            pitch, roll, yaw, false, true, true, 0.1, false, 0
+                            pitch, roll, yaw, false, true, false, 0.1, false, 0
                         )
                         gimbalKey.action(rot)
                         "Received: roll: $roll, pitch: $pitch, yaw: $yaw"
                     }
-                    "/send/gimbal/yaw" -> {
-                        val cmd = postData.split(",")
-                        val roll = cmd[0].toDouble()
-                        val pitch = cmd[1].toDouble()
-                        val yaw = cmd[2].toDouble()
+                    "/send/gimbal/roll" -> {
+                        val roll = postData.toDouble()
                         val rot = GimbalAngleRotation(
                             GimbalAngleRotationMode.ABSOLUTE_ANGLE,
-                            pitch, roll, yaw, true, true, false, 0.1, false, 0
+                            0.0, roll, 0.0, true, false, true, 0.1, false, 0
                         )
                         gimbalKey.action(rot)
-                        "Received: roll: $roll, pitch: $pitch, yaw: $yaw"
+                        "Received: roll: $roll"
+                    }
+                    "/send/gimbal/pitch" -> {
+                        val pitch = postData.toDouble()
+                        val rot = GimbalAngleRotation(
+                            GimbalAngleRotationMode.ABSOLUTE_ANGLE,
+                            pitch, 0.0, 0.0, false, true, true, 0.1, false, 0
+                        )
+                        gimbalKey.action(rot)
+                        "Received: roll: pitch: $pitch"
+                    }
+                    "/send/gimbal/yaw" -> {
+                        val yaw = postData.toDouble()
+                        val rot = GimbalAngleRotation(
+                            GimbalAngleRotationMode.ABSOLUTE_ANGLE,
+                            0.0, 0.0, yaw, true, true, false, 0.1, false, 0
+                        )
+                        gimbalKey.action(rot)
+                        "Received: roll: yaw: $yaw"
+                    }
+                    "/send/gimbal/speed" -> {
+                        val cmd = postData.split(",")
+                        val rollSpeed = cmd[0].toDouble()
+                        val pitchSpeed = cmd[1].toDouble()
+                        val yawSpeed = cmd[2].toDouble()
+                        DroneController.setGimbalSpeed(rollSpeed, pitchSpeed, yawSpeed)
+                        "Received: speed roll: $rollSpeed, pitch: $pitchSpeed, yaw: $yawSpeed"
+                    }
+                    "/send/gimbal/stop" -> {
+                        DroneController.setGimbalSpeed(0.0, 0.0, 0.0)
+                        "Gimbal stopped."
                     }
                     "/send/gotoYaw" -> {
                         if (DroneController.shouldRejectAutonomousCommand("gotoYaw")) {

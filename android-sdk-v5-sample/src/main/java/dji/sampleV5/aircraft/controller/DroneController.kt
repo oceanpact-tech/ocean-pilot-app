@@ -18,9 +18,11 @@ import dji.sdk.keyvalue.value.common.LocationCoordinate3D
 import dji.v5.et.create
 import dji.v5.et.get
 import kotlin.math.*
+import kotlinx.coroutines.*
 import com.dji.wpmzsdk.common.data.Template
 import com.dji.wpmzsdk.manager.WPMZManager
 import dji.sampleV5.aircraft.utils.wpml.WaypointInfoModel
+import dji.sdk.keyvalue.key.GimbalKey
 import dji.v5.manager.aircraft.waypoint3.WaypointMissionManager
 import dji.v5.utils.common.ContextUtil
 import dji.sdk.wpmz.value.mission.*
@@ -44,14 +46,24 @@ import java.util.zip.ZipFile
 
 import dji.v5.manager.KeyManager
 import dji.sdk.keyvalue.key.RtkMobileStationKey
-import android.util.Log
-import com.dji.wpmzsdk.common.utils.kml.createMapping3DWaylineModel
-import dji.v5.manager.aircraft.virtualstick.VirtualStickManager
+import dji.sdk.keyvalue.value.common.Attitude
+import dji.sdk.keyvalue.value.gimbal.GimbalSpeedRotation
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+
 
 object DroneController {
 
     private var basicAircraftControlVM: BasicAircraftControlVM? = null
     var virtualStickVM: VirtualStickVM? = null
+
+    // ==================== DJI Gimbal Control System ====================
+    private var gimbalKeyBySpeed: DJIKey.ActionKey<GimbalSpeedRotation, EmptyMsg> = GimbalKey.KeyRotateBySpeed.create()
+    private var gimbalAttitudeKey: DJIKey<Attitude> = GimbalKey.KeyGimbalAttitude.create()
+    private var gimbalSpeedJob: Job? = null
+    private var targetPitchSpeed = 0.0
+    private var targetRollSpeed = 0.0
+    private var targetYawSpeed = 0.0
 
     // ==================== DJI Native System ====================
     private var currentTargetKmzWaypointIndex: Int = -1
@@ -918,6 +930,65 @@ object DroneController {
         activeControlLoopRunnable = runnable
         controlLoopHandler.post(runnable)
         return seq
+    }
+
+    fun setGimbalSpeed(roll: Double, pitch: Double, yaw: Double) {
+        targetRollSpeed = roll
+        targetPitchSpeed = pitch
+        targetYawSpeed = yaw
+
+        // Action: STOP
+        if (pitch == 0.0 && roll == 0.0 && yaw == 0.0) {
+            val stopRot = GimbalSpeedRotation().apply {
+                this.pitch = 0.0; this.roll = 0.0; this.yaw = 0.0
+            }
+            KeyManager.getInstance().performAction(gimbalKeyBySpeed, stopRot, null)
+            gimbalSpeedJob?.cancel()
+            return
+        }
+
+        // Update targets buffers whether there is a loop
+        if (gimbalSpeedJob?.isActive == true) return
+
+        // Start new loop
+        gimbalSpeedJob = CoroutineScope(Dispatchers.IO).launch {
+            var lastAttitude = KeyManager.getInstance().getValue(gimbalAttitudeKey)
+            var timeOfLastAttitude = System.currentTimeMillis()
+
+            try {
+                while (isActive) {
+                    val rot = GimbalSpeedRotation().apply {
+                        this.pitch = targetPitchSpeed
+                        this.roll = targetRollSpeed
+                        this.yaw = targetYawSpeed
+                    }
+                    KeyManager.getInstance().performAction(gimbalKeyBySpeed, rot, null)
+                    delay(100)
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - timeOfLastAttitude >= 500) {
+                        val currentAttitude = KeyManager.getInstance().getValue(gimbalAttitudeKey)
+                        if (currentAttitude != null && lastAttitude != null) {
+                            val deltaPitch = abs(currentAttitude.pitch - lastAttitude!!.pitch)
+                            val deltaYaw = abs(currentAttitude.yaw - lastAttitude!!.yaw)
+                            val totalMovement = deltaPitch + deltaYaw
+                            if (totalMovement < 0.5) {
+                                // ToastUtils.showToast("Stop gimbal.") // Debug
+                                break
+                            }
+                        }
+                        lastAttitude = currentAttitude
+                        timeOfLastAttitude = currentTime
+                    }
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    val finalStop = GimbalSpeedRotation().apply {
+                        this.pitch = 0.0; this.roll = 0.0; this.yaw = 0.0
+                    }
+                    KeyManager.getInstance().performAction(gimbalKeyBySpeed, finalStop, null)
+                }
+            }
+        }
     }
 
     /**
