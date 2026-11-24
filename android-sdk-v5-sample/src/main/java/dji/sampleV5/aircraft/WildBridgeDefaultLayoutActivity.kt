@@ -52,10 +52,13 @@ import dji.sampleV5.aircraft.models.MediaVM
 import dji.sampleV5.aircraft.models.PayloadWidgetVM
 import dji.sampleV5.aircraft.models.VirtualStickVM
 import dji.sampleV5.aircraft.server.TelemetryServer
+
 import dji.sampleV5.aircraft.webrtc.WebRTCMediaOptions
 import dji.sampleV5.aircraft.webrtc.WebRTCStreamer
 import dji.sampleV5.aircraft.webrtc.WebRTCStreamMetrics
+
 import dji.sampleV5.aircraft.webrtc.TelemetryProvider
+
 import dji.sdk.keyvalue.key.BatteryKey
 import dji.sdk.keyvalue.key.CameraKey
 import dji.sdk.keyvalue.key.DJIKey
@@ -132,6 +135,12 @@ import android.net.nsd.NsdServiceInfo
 import dji.sampleV5.aircraft.util.ToastUtils
 import dji.v5.manager.aircraft.virtualstick.VirtualStickManager
 
+// Video streaming
+import dji.sampleV5.aircraft.videostreaming.VideoStreamConfig
+import dji.sampleV5.aircraft.videostreaming.StreamOptions
+import dji.sampleV5.aircraft.videostreaming.SrtStreamer
+import dji.sampleV5.aircraft.videostreaming.SharedDJIFrameSource as SrtSharedFrameSource
+
 /**
  * WildBridge Default Layout Activity
  * 
@@ -148,7 +157,8 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         private const val TAG_THERMAL = "WildBridgeThermal"
         private const val HTTP_PORT = 8080
         private const val TELEMETRY_PORT = 8081
-        private const val MEDIAMTX_WHIP_PORT = 8889  // mediamtx WebRTC port for WHIP publish
+        private const val MEDIAMTX_WHIP_PORT = 8889   // mediamtx WebRTC port for WHIP publish
+        private const val MEDIAMTX_SRT_PORT = 8890    // mediamtx port for SRT publish
         private const val PREF_DRONE_NAME = "drone_name"
         private const val PREF_MEDIAMTX_SERVER = "mediamtx_server"
         private const val SAFETY_TOKEN = "98"
@@ -176,10 +186,26 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         val height: Int,
         val bitrate: Int
     ) {
-        AUTO("auto", "Auto / native", 0, 0, 6_000_000),
-        FULL_HD("1080p", "1080p", 1920, 1080, 6_000_000),
-        HD("720p", "720p", 1280, 720, 3_500_000),
-        SD("480p", "480p", 640, 480, 1_500_000);
+        AUTO(
+            "auto", "Auto / native", 
+            StreamOptions.NATIVE_WIDTH, StreamOptions.NATIVE_HEIGHT, 
+            StreamOptions.AUTO_BITRATE_BPS
+        ),
+        FULL_HD(
+            "1080p", "1080p", 
+            StreamOptions.FULL_HD_WIDTH, StreamOptions.FULL_HD_HEIGHT, 
+            StreamOptions.FULL_HD_BITRATE_BPS
+        ),
+        HD(
+            "720p", "720p", 
+            StreamOptions.HD_WIDTH, StreamOptions.HD_HEIGHT, 
+            StreamOptions.HD_BITRATE_BPS
+        ),
+        SD(
+            "480p", "480p",
+            StreamOptions.SD_WIDTH, StreamOptions.SD_HEIGHT, 
+            StreamOptions.SD_BITRATE_BPS
+        );
 
         companion object {
             fun fromPref(value: String?): StreamResolutionPreset {
@@ -199,9 +225,13 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
     // Servers
     private var httpServer: SimpleHttpServer? = null
     private var telemetryServer: TelemetryServer? = null
-    private var webRTCStreamer: WebRTCStreamer? = null
-    @Volatile private var lastWhipUrl: String? = null  // Remembered for FPS/Quality mode restarts
-    
+//    private var webRTCStreamer: WebRTCStreamer? = null
+//    @Volatile private var lastWhipUrl: String? = null  // Remembered for FPS/Quality mode restarts
+    private var srtStreamer: SrtStreamer? = null
+    private var srtFrameSource: SrtSharedFrameSource? = null
+    @Volatile private var lastTelemetryClientIp: String? = null
+
+
     // Discovery (UDP broadcast/multicast)
     private var discoverySocket: DatagramSocket? = null
     private var multicastSocket: MulticastSocket? = null
@@ -608,17 +638,34 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
 
     // ==================== End Pilot / Safety Authority ====================
 
-    private fun buildWebRTCOptions(): WebRTCMediaOptions {
+    // private fun buildWebRTCOptions(): WebRTCMediaOptions {
+    //     val preset = getWebRTCResolutionPreset()
+    //     return if (preset == StreamResolutionPreset.AUTO) {
+    //         WebRTCMediaOptions.native().copy(fps = getWebRTCFps())
+    //     } 
+    //     else {
+    //         WebRTCMediaOptions(
+    //             videoResolutionWidth = preset.width,
+    //             videoResolutionHeight = preset.height,
+    //             fps = getWebRTCFps(),
+    //             videoBitrate = preset.bitrate,
+    //             videoCodec = "H264"
+    //         )
+    //     }
+    // }
+
+    private fun buildVideoStreamConfig(): VideoStreamConfig {
         val preset = getWebRTCResolutionPreset()
+        val fps = getWebRTCFps()
         return if (preset == StreamResolutionPreset.AUTO) {
-            WebRTCMediaOptions.native().copy(fps = getWebRTCFps())
+            VideoStreamConfig.native().copy(fps = fps)
         } else {
-            WebRTCMediaOptions(
-                videoResolutionWidth = preset.width,
-                videoResolutionHeight = preset.height,
-                fps = getWebRTCFps(),
-                videoBitrate = preset.bitrate,
-                videoCodec = "H264"
+            VideoStreamConfig(
+                width = preset.width,
+                height = preset.height,
+                fps = fps,
+                bitrateBps = preset.bitrate,
+                codec = StreamOptions.CODEC
             )
         }
     }
@@ -807,7 +854,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         }
         if (isConnected && sharedPreferences.getBoolean(PREF_MOCK_VIDEO_ENABLED, false)) {
             sharedPreferences.edit().putBoolean(PREF_MOCK_VIDEO_ENABLED, false).apply()
-            webRTCStreamer?.setMockVideoEnabled(false)
+//            webRTCStreamer?.setMockVideoEnabled(false)
         }
         updateMockVideoVisibility()
         refreshMockTelemetryMode()
@@ -827,7 +874,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             }
             sharedPreferences.edit().putBoolean(PREF_MOCK_VIDEO_ENABLED, isChecked).apply()
             updateMockVideoToggleUi(isChecked)
-            webRTCStreamer?.setMockVideoEnabled(isChecked)
+//            webRTCStreamer?.setMockVideoEnabled(isChecked)
             refreshMockTelemetryMode()
             val label = if (isChecked) "Mock MP4 video enabled" else "DJI camera video enabled"
             Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
@@ -978,20 +1025,20 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
      * Start WHIP publishing on the existing WebRTC streamer.
      * Called automatically when the bridge connects to the telemetry server.
      */
-    private fun startWhipPublishing(whipUrl: String) {
-        lastWhipUrl = whipUrl  // Remember for FPS/Quality mode restarts
-        val streamer = webRTCStreamer
-        if (streamer == null) {
-            Log.w(TAG, "Cannot start WHIP — WebRTCStreamer not initialized yet")
-            return
-        }
-        try {
-            streamer.startWhip(whipUrl)
-            Log.i(TAG, "WHIP publishing started: $whipUrl")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start WHIP publishing: ${e.message}", e)
-        }
-    }
+//    private fun startWhipPublishing(whipUrl: String) {
+//        lastWhipUrl = whipUrl  // Remember for FPS/Quality mode restarts
+//        val streamer = webRTCStreamer
+//        if (streamer == null) {
+//            Log.w(TAG, "Cannot start WHIP — WebRTCStreamer not initialized yet")
+//            return
+//        }
+//        try {
+//            streamer.startWhip(whipUrl)
+//            Log.i(TAG, "WHIP publishing started: $whipUrl")
+//        } catch (e: Exception) {
+//            Log.e(TAG, "Failed to start WHIP publishing: ${e.message}", e)
+//        }
+//    }
 
     // ==================== End Video Mode Toggle ====================
 
@@ -1178,9 +1225,9 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         val internalStatus = getDroneStorageStatus(CameraStorageLocation.INTERNAL, "Internal")
         PopupMenu(this, anchor).apply {
             menu.add(0, 1, 0, "Change Drone Name")
-            menu.add(0, 2, 1, "Set WHIP Server")
-            menu.add(0, 5, 2, "WebRTC FPS: ${getWebRTCFps()}")
-            menu.add(0, 7, 3, "WebRTC Resolution: ${getWebRTCResolutionPreset().menuLabel}")
+            menu.add(0, 2, 1, "Set MediaMTX Server IP")
+            menu.add(0, 5, 2, "Video FPS: ${getWebRTCFps()}")
+            menu.add(0, 7, 3, "Video Resolution: ${getWebRTCResolutionPreset().menuLabel}")
             var nextOrder = 3
             if (shouldAllowMockVideo()) {
                 menu.add(0, 6, nextOrder++, "Mock Video: ${if (isMockVideoEnabled()) "On" else "Off"}")
@@ -1311,6 +1358,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                     Log.i(TAG, "Drone name set to: $droneName")
                     Toast.makeText(this, "Drone name saved: $droneName", Toast.LENGTH_SHORT).show()
                     updateDroneNameDisplay()
+                    applySrtServerConfiguration() // UPDATE VIDEO
                 } else {
                     droneName = DEFAULT_DRONE_NAME
                     sharedPreferences.edit().putString(PREF_DRONE_NAME, droneName).apply()
@@ -1332,12 +1380,12 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
     private fun showMediamtxServerDialog() {
         val input = EditText(this)
         val current = sharedPreferences.getString(PREF_MEDIAMTX_SERVER, "").orEmpty()
-        input.hint = "host o host:puerto (ej: 10.233.132.21:8889)"
+        input.hint = "host ou host:porta (ex: 10.233.132.21:8890)"
         input.setText(current)
 
         AlertDialog.Builder(this)
-            .setTitle("WHIP / mediamtx server")
-            .setMessage("Opcional: si se deja vacío, se usa la IP del primer cliente de telemetría.")
+            .setTitle("SRT / mediamtx server")
+            .setMessage("Opcional: se vazio, será usado o IP do primeiro cliente de telemetria.")
             .setView(input)
             .setPositiveButton("Save") { _, _ ->
                 val value = input.text.toString().trim()
@@ -1345,6 +1393,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                 val shown = if (value.isEmpty()) "auto (client IP)" else value
                 Log.i(TAG, "Mediamtx server set to: $shown")
                 Toast.makeText(this, "WHIP server: $shown", Toast.LENGTH_SHORT).show()
+                applySrtServerConfiguration() // UPDATE VIDEO
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -1360,9 +1409,10 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
                 val selectedFps = WEBRTC_FPS_OPTIONS[which]
                 sharedPreferences.edit().putInt(PREF_WEBRTC_FPS, selectedFps).apply()
-                webRTCStreamer?.changeMediaOptions(buildWebRTCOptions())
+//                webRTCStreamer?.changeMediaOptions(buildWebRTCOptions())
                 Toast.makeText(this, "WebRTC FPS: $selectedFps", Toast.LENGTH_SHORT).show()
                 Log.i(TAG, "WebRTC frame rate set to $selectedFps fps")
+                applySrtServerConfiguration() // UPDATE VIDEO
                 dialog.dismiss()
             }
             .setNegativeButton("Cancel", null)
@@ -1381,12 +1431,13 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             .setSingleChoiceItems(labels, checkedIndex) { dialog, which ->
                 val selectedPreset = presets[which]
                 sharedPreferences.edit().putString(PREF_WEBRTC_RESOLUTION, selectedPreset.prefValue).apply()
-                webRTCStreamer?.changeMediaOptions(buildWebRTCOptions())
+//                webRTCStreamer?.changeMediaOptions(buildWebRTCOptions())
                 Toast.makeText(this, "WebRTC resolution: ${selectedPreset.menuLabel}", Toast.LENGTH_SHORT).show()
                 Log.i(
                     TAG,
                     "WebRTC resolution set to ${if (selectedPreset.width > 0 && selectedPreset.height > 0) "${selectedPreset.width}x${selectedPreset.height}" else "native source"}"
                 )
+                applySrtServerConfiguration() // UPDATE VIDEO
                 dialog.dismiss()
             }
             .setNegativeButton("Cancel", null)
@@ -1508,29 +1559,31 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         })
     }
 
-    private fun buildWhipUrl(clientIp: String): String {
-        val safeDroneName = droneName.trim().ifEmpty {
-            DEFAULT_DRONE_NAME
-        }
+    private fun buildSrtUrl(clientIp: String): String {
+        val safeDroneName = droneName.trim()
+            .replace(Regex("\\s+"), "_")
+            .ifEmpty { DEFAULT_DRONE_NAME }
 
         val configuredServer = sharedPreferences.getString(PREF_MEDIAMTX_SERVER, "")
             ?.trim()
             .orEmpty()
 
-        val hostAndPort = if (configuredServer.isEmpty()) {
-            "$clientIp:$MEDIAMTX_WHIP_PORT"
-        } else {
-            var normalized = configuredServer
-                .removePrefix("http://")
-                .removePrefix("https://")
-                .trimEnd('/')
-            if (!normalized.contains(':')) {
-                normalized = "$normalized:$MEDIAMTX_WHIP_PORT"
-            }
-            normalized
-        }
+        val hostAndPort =
+            if (configuredServer.isEmpty()) { "$clientIp:$MEDIAMTX_SRT_PORT" }
+            else {
+                val cleaned = configuredServer
+                    .removePrefix("srt://")
+                    .removePrefix("http://")
+                    .removePrefix("https://")
+                    .substringBefore("/")
+                val host = cleaned.substringBefore(":")
+                val port = cleaned.substringAfter(":", "").toIntOrNull()
 
-        return "http://$hostAndPort/$safeDroneName/whip"
+                val finalPort = if (port == null || port == MEDIAMTX_WHIP_PORT) MEDIAMTX_SRT_PORT else port
+                "$host:$finalPort"
+            }
+
+        return "srt://$hostAndPort/publish:$safeDroneName"
     }
 
     private fun startLocationUpdates() {
@@ -1603,9 +1656,10 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             try {
                 telemetryServer = TelemetryServer(TELEMETRY_PORT, ::getTelemetryJson)
                 telemetryServer?.onFirstClientConnected = { clientIp ->
-                    val whipUrl = buildWhipUrl(clientIp)
-                    Log.i(TAG, "First telemetry client from $clientIp — starting WHIP: $whipUrl")
-                    Thread { startWhipPublishing(whipUrl) }.start()
+                    lastTelemetryClientIp = clientIp
+                    val srtUrl = "srt://$clientIp:8890/live/stream"
+                    Log.i(TAG, "First telemetry client from $clientIp — starting SRT stream to: $srtUrl")
+                    applySrtServerConfiguration()
                 }
                 telemetryServer?.start()
                 Log.i(TAG, "Telemetry server started on $deviceIp:$TELEMETRY_PORT")
@@ -1616,43 +1670,95 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             Log.w(TAG, "Telemetry port $TELEMETRY_PORT already in use")
         }
 
-        // WebRTC video via WHIP — create the shared frame source/publisher.
-        // WHIP publishing starts automatically when bridge connects to telemetry.
-        try {
-            webRTCStreamer = WebRTCStreamer(
-                context = applicationContext,
-                cameraIndex = ComponentIndexType.LEFT_OR_MAIN,
-                droneName = droneName,
-                options = buildWebRTCOptions(),
-                mockVideoEnabled = isMockVideoEnabled()
-            )
-            webRTCStreamer?.listener = object : WebRTCStreamer.WebRTCStreamerListener {
-                override fun onServerStarted(ip: String, port: Int) {
-                    Log.i(TAG, "WHIP publishing from $ip")
-                }
-                override fun onServerStopped() {
-                    Log.i(TAG, "WebRTC streamer stopped")
-                }
-                override fun onServerError(error: String) {
-                    Log.e(TAG, "WebRTC error: $error")
-                }
-                override fun onMetrics(metrics: WebRTCStreamMetrics) {
-                    lastWebRTCMetrics = metrics
-                    rebuildTelemetryCache()
-                    mainHandler.post { updateWebRTCMetricsView(metrics) }
-                }
-            }
-            Log.i(TAG, "WebRTC streamer ready (WHIP starts on first telemetry client)")
+        // // SRT Video Pipeline Initialization
+        // try {
+        //     srtStreamer = SrtStreamer(applicationContext)
+        //     srtFrameSource = SrtSharedFrameSource(ComponentIndexType.LEFT_OR_MAIN, droneName)
+        //     srtFrameSource?.srtStreamer = srtStreamer
 
-            // If the telemetry callback already fired before streamer was ready, start now
-            val pendingUrl = lastWhipUrl
-            if (pendingUrl != null) {
-                Log.i(TAG, "Deferred WHIP start: $pendingUrl")
-                Thread { startWhipPublishing(pendingUrl) }.start()
-            }
+        //     val preset = getWebRTCResolutionPreset()
+        //     val fps = getWebRTCFps()
+        //     val srtWidth = if (preset.width > 0) preset.width else 1280
+        //     val srtHeight = if (preset.height > 0) preset.height else 720
+
+        //     srtStreamer?.prepareVideo(srtWidth, srtHeight, fps, preset.bitrate)
+        //     srtFrameSource?.changeFrameRate(fps)
+        //     srtFrameSource?.startCapture()
+
+        //     applySrtServerConfiguration()
+        // } catch (e: Exception) {
+        //     Log.e(TAG, "Error creating SRT streamer: ${e.message}")
+        // }
+
+        // SRT Video Pipeline Initialization
+        try {
+            val config = buildVideoStreamConfig()
+            srtStreamer = SrtStreamer(applicationContext)
+            srtFrameSource = SrtSharedFrameSource(ComponentIndexType.LEFT_OR_MAIN, droneName)
+            srtFrameSource?.srtStreamer = srtStreamer
+            srtFrameSource?.changeFrameRate(config.fps)
+            srtFrameSource?.startCapture()
+
+            applySrtServerConfiguration()
         } catch (e: Exception) {
-            Log.e(TAG, "Error creating WebRTC streamer: ${e.message}")
+            Log.e(TAG, "Error creating SRT streamer: ${e.message}")
         }
+    }
+
+    // private fun applySrtServerConfiguration() {
+    //     val preset = getWebRTCResolutionPreset()
+    //     val fps = getWebRTCFps()
+    //     val srtWidth = if (preset.width > 0) preset.width else 1280
+    //     val srtHeight = if (preset.height > 0) preset.height else 720
+
+    //     srtFrameSource?.changeFrameRate(fps)
+    //     srtStreamer?.prepareVideo(srtWidth, srtHeight, fps, preset.bitrate)
+
+    //     val configuredServer = sharedPreferences.getString(PREF_MEDIAMTX_SERVER, "")
+    //         ?.trim()
+    //         .orEmpty()
+
+    //     val fallbackIp = lastTelemetryClientIp?.trim().orEmpty()
+    //     if (configuredServer.isEmpty() && fallbackIp.isEmpty()) {
+    //         Log.i(TAG, "No SRT server configured and no telemetry client IP yet — stopping stream if active")
+    //         srtStreamer?.stopStream()
+    //         return
+    //     }
+
+    //     val srtUrl = buildSrtUrl(fallbackIp)
+    //     Log.i(TAG, "Applying SRT config -> url=$srtUrl, ${srtWidth}x${srtHeight}@${fps}fps")
+    //     srtStreamer?.stopStream()
+    //     srtStreamer?.startStream(srtUrl)
+    // }
+
+    private val srtLock = Any()
+
+    private fun applySrtServerConfiguration() {
+        val config = buildVideoStreamConfig()
+        val configuredServer = sharedPreferences.getString(PREF_MEDIAMTX_SERVER, "")
+            ?.trim()
+            .orEmpty()
+        val fallbackIp = lastTelemetryClientIp?.trim().orEmpty()
+
+        srtFrameSource?.changeFrameRate(config.fps)
+
+        Thread {
+            synchronized(srtLock) {
+                val streamer = srtStreamer ?: return@synchronized
+
+                if (configuredServer.isEmpty() && fallbackIp.isEmpty()) {
+                    Log.i(TAG, "No SRT server configured and no telemetry client IP yet — stopping stream if active")
+                    streamer.stopStream()
+                    return@synchronized
+                }
+
+                val srtUrl = buildSrtUrl(fallbackIp)
+                Log.i(TAG, "Applying SRT config -> url=$srtUrl, ${config.width}x${config.height}@${config.fps}fps")
+                streamer.stopStream()
+                streamer.prepareVideo(config)
+                streamer.startStream(srtUrl)
+            }
+        }.start()
     }
 
     private fun showServerInfo() {
@@ -1662,7 +1768,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             IP: $deviceIp
             HTTP Commands: $HTTP_PORT
             Telemetry: $TELEMETRY_PORT
-            Video: WHIP (auto on bridge connect)
+            Video: SRT (auto on bridge connect)
         """.trimIndent()
         
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
@@ -1699,12 +1805,13 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             httpServer?.stop()
             telemetryServer?.onFirstClientConnected = null
             telemetryServer?.stop()
-            webRTCStreamer?.listener = null
-            webRTCStreamer?.stop()
+            srtStreamer?.stopStream()
+            srtFrameSource?.dispose()
             stopDiscoveryServer()
             httpServer = null
             telemetryServer = null
-            webRTCStreamer = null
+            srtStreamer = null
+            srtFrameSource = null
 
             // Unregister mDNS service
             unregisterMdnsService()
@@ -1759,9 +1866,9 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
     
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menu.add(0, 1, 0, "Change Drone Name")
-        menu.add(0, 2, 1, "Set WHIP Server")
-        menu.add(0, 5, 2, "WebRTC FPS: ${getWebRTCFps()}")
-        menu.add(0, 7, 3, "WebRTC Resolution: ${getWebRTCResolutionPreset().menuLabel}")
+        menu.add(0, 2, 1, "Set SRT Server")
+        menu.add(0, 5, 2, "Video FPS: ${getWebRTCFps()}")
+        menu.add(0, 7, 3, "Video Resolution: ${getWebRTCResolutionPreset().menuLabel}")
         var nextOrder = 3
         if (shouldAllowMockVideo()) {
             menu.add(0, 6, nextOrder++, "Mock Video: ${if (isMockVideoEnabled()) "On" else "Off"}")
@@ -1798,7 +1905,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                 val nextValue = !isMockVideoEnabled()
                 sharedPreferences.edit().putBoolean(PREF_MOCK_VIDEO_ENABLED, nextValue).apply()
                 findViewById<Switch>(R.id.sw_mock_video)?.isChecked = nextValue
-                webRTCStreamer?.setMockVideoEnabled(nextValue)
+//                webRTCStreamer?.setMockVideoEnabled(nextValue)
                 refreshMockTelemetryMode()
                 true
             }
@@ -1976,7 +2083,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                 setAttribute("serial", droneSerialNumber)
                 setAttribute("http", HTTP_PORT.toString())
                 setAttribute("telemetry", TELEMETRY_PORT.toString())
-                setAttribute("video", "whip")
+                setAttribute("video", "srt")
             }
             
             isMdnsRegistrationRequested = true

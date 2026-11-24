@@ -30,11 +30,11 @@ allprojects {
             url KOTLIN_MAVEN
         }
         maven { url JITPACK_MAVEN_URL }
+//        maven { url 'https://jitpack.io' }
         repositories {
             flatDir {
                 dirs new File(rootProject.projectDir.getAbsolutePath() + '/libs')
             }
         }
     }
-
 }

@@ -153,6 +153,10 @@ android {
     }
 }
 
+repositories {
+    maven { url 'https://jitpack.io' }
+}
+
 dependencies {
     /** <----------------- MSDK dependencies ------------------> **/
     compileOnly deps.aircraftProvided
@@ -188,4 +192,7 @@ dependencies {
 
     // WebRTC for drone video streaming (Stream's maintained fork)
     implementation 'io.getstream:stream-webrtc-android:1.1.1'
+
+    // RootEncoder for SRT video streaming (Replaces WebRTC)
+    implementation 'com.github.pedroSG94.RootEncoder:library:2.4.5'
 }
