@@ -6,15 +6,15 @@ import android.media.MediaFormat
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Surface
 import com.pedro.common.ConnectChecker
-import com.pedro.encoder.Frame
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
 import com.pedro.encoder.video.VideoEncoder
 import com.pedro.srt.srt.SrtClient
 import java.nio.ByteBuffer
 
-/** Parâmetros ajustáveis em tempo de execução. null = usa o padrão (preset / biblioteca). */
+/** Parameters adjustable at runtime. null = use the default (preset / library). */
 data class SrtParams(
     val kbps: Int? = null,
     val fps: Int? = null,
@@ -29,7 +29,9 @@ class SrtStreamer(private val context: Context) {
     private val TAG = "SrtStreamer"
     private val main = Handler(Looper.getMainLooper())
 
-    // Estado de controle: só na thread principal
+    var onSurfaceReady: ((Surface, Int, Int) -> Unit)? = null
+    var onSurfaceDestroyed: ((Surface) -> Unit)? = null
+
     private var config: VideoStreamConfig = VideoStreamConfig.hd()
     private var params = SrtParams()
     private var url: String? = null
@@ -38,7 +40,6 @@ class SrtStreamer(private val context: Context) {
 
     @Volatile private var session: Session? = null
 
-    // true = o app deve entregar frames (o encoder nasce no primeiro frame, antes da conexão)
     val isStreaming: Boolean get() = session != null
 
     private inner class Session : ConnectChecker, GetVideoData {
@@ -46,12 +47,8 @@ class SrtStreamer(private val context: Context) {
         val encoder = VideoEncoder(this)
         @Volatile var live = false
         @Volatile var connected = false
-        @Volatile var sizeRequested = false
-        @Volatile var sizeChanged = false
-        @Volatile var w = 0
-        @Volatile var h = 0
+        @Volatile var surface: Surface? = null
         var connectCalled = false
-
 
         private fun current() = session === this
 
@@ -69,7 +66,7 @@ class SrtStreamer(private val context: Context) {
         override fun onVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
             if (!current()) return
             client.setVideoInfo(sps, pps, vps)
-            main.post { if (current()) connectIfNeeded(this) }   // pode ser chamado mais de uma vez; connectIfNeeded protege
+            main.post { if (current()) connectIfNeeded(this) }
         }
         override fun getVideoData(h264Buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
             if (current() && connected) client.sendVideo(h264Buffer, info)
@@ -97,7 +94,7 @@ class SrtStreamer(private val context: Context) {
 
     init { main.postDelayed(statsTick, 1000) }
 
-    // ---------------- API pública (qualquer thread) ----------------
+    // ---------------- public API ----------------
 
     fun prepareVideo(cfg: VideoStreamConfig): Boolean {
         main.post { config = cfg }
@@ -122,7 +119,6 @@ class SrtStreamer(private val context: Context) {
         }
     }
 
-    /** Troca os parâmetros e reinicia a sessão (se estiver transmitindo). */
     fun applyParams(p: SrtParams) {
         main.post {
             params = p
@@ -136,52 +132,40 @@ class SrtStreamer(private val context: Context) {
         main.post { wanted = false; closeSession() }
     }
 
-    fun feedCustomFrame(nv21ByteArray: ByteArray, timestampNs: Long, width: Int, height: Int) {
-        val s = session ?: return
-
-        if (!s.live) {
-            // O encoder nasce com o tamanho real do frame: a DJI entrega o tamanho nativo e aqui não há escala.
-            if (!s.sizeRequested) {
-                s.sizeRequested = true
-                main.post { if (session === s) startEncoder(s, width, height) }
-            }
-            return
-        }
-
-        if ((width != s.w || height != s.h) && !s.sizeChanged) {
-            s.sizeChanged = true
-            main.post { if (session === s) onLost("tamanho do frame mudou: ${s.w}x${s.h} -> ${width}x${height}") }
-            return
-        }
-
-        try {
-            s.encoder.inputYUVData(Frame(nv21ByteArray, 0, nv21ByteArray.size, timestampNs / 1000))
-        } catch (e: Exception) {
-            Log.e(TAG, "Error feeding NV21 frame to encoder", e)
-        }
-    }
-
-    // ---------------- Controle (só na main) ----------------
+    // ---------------- Control (only in main) ----------------
 
     private fun openSession() {
         closeSession()
         val s = Session()
         session = s
         runCatching { s.client.setOnlyVideo(true) }
-        Log.i(TAG, "Sessão nova, aguardando o primeiro frame da câmera")
+        startEncoder(s)
     }
 
-    private fun startEncoder(s: Session, w: Int, h: Int) {
+    private fun startEncoder(s: Session) {
+        // Se o usuário escolheu "Auto / native" (0x0), usa 1080p como padrão de Surface
+        val w = if (config.usesSourceResolution) StreamOptions.FULL_HD_WIDTH else config.width
+        val h = if (config.usesSourceResolution) StreamOptions.FULL_HD_HEIGHT else config.height
         val fps = params.fps ?: config.fps
         val bps = params.kbps?.times(1000) ?: config.copy(width = w, height = h).senderBitrateBps()
-        Log.i(TAG, "CONFIG w=$w h=$h fps=$fps kbps=${bps / 1000} iframe=${params.iframeSec}")
+
+        Log.i(TAG, "CONFIG (SURFACE) w=$w h=$h fps=$fps kbps=${bps / 1000} iframe=${params.iframeSec}")
         try {
-            val ok = s.encoder.prepareVideoEncoder(w, h, fps, bps, 0, params.iframeSec, FormatVideoEncoder.YUV420Dynamical)
+            val ok = s.encoder.prepareVideoEncoder(
+                w, h, fps, bps, 0, params.iframeSec, FormatVideoEncoder.SURFACE
+            )
             if (!ok) { onLost("prepare failed"); return }
-            s.w = w
-            s.h = h
+
+            val inputSurface = s.encoder.inputSurface
+            if (inputSurface == null) {
+                onLost("inputSurface is null")
+                return
+            }
+
+            s.surface = inputSurface
             s.encoder.start()
             s.live = true
+            onSurfaceReady?.invoke(inputSurface, w, h)
         } catch (e: Exception) {
             onLost("encoder: ${e.message}")
         }
@@ -191,9 +175,9 @@ class SrtStreamer(private val context: Context) {
         if (s.connectCalled) return
         val u = url ?: return
         s.connectCalled = true
-        params.latencyMs?.let { s.client.setLatency(it) }                          // em ms
-        params.retransmitOverheadPct?.let { s.client.setRetransmitOverhead(it) }   // % (padrão 25)
-        s.client.setServerSilenceTimeout(params.serverSilenceMs)                   // 0 = desligado
+        params.latencyMs?.let { s.client.setLatency(it) }
+        params.retransmitOverheadPct?.let { s.client.setRetransmitOverhead(it) }
+        s.client.setServerSilenceTimeout(params.serverSilenceMs)
         Log.i(TAG, "Connecting SRT stream to $u latency=${params.latencyMs ?: "default"}")
         s.client.connect(u)
         main.postDelayed({ if (session === s && !s.connected) onLost("connect timeout") }, 8000)
@@ -202,14 +186,18 @@ class SrtStreamer(private val context: Context) {
     private fun onConnected(s: Session) {
         s.connected = true
         Log.i(TAG, "SRT Connected successfully")
-        runCatching { s.encoder.requestKeyframe() }   // se não compilar, apague esta linha
+        runCatching { s.encoder.requestKeyframe() }
     }
 
     private fun closeSession() {
         val s = session ?: return
-        session = null                // callbacks dessa sessão passam a ser ignorados
+        session = null
         s.live = false
         s.connected = false
+        s.surface?.let { surf ->
+            s.surface = null
+            runCatching { onSurfaceDestroyed?.invoke(surf) }
+        }
         runCatching { s.encoder.stop() }
         runCatching { s.client.disconnect() }
     }

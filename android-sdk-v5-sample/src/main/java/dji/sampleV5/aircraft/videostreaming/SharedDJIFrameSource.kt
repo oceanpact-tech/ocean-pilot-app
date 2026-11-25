@@ -1,9 +1,8 @@
 package dji.sampleV5.aircraft.videostreaming
 
 import android.util.Log
+import android.view.Surface
 import dji.sampleV5.aircraft.webrtc.FrameMetadata
-import dji.sampleV5.aircraft.webrtc.TelemetryProvider
-import dji.sampleV5.aircraft.videostreaming.SrtStreamer
 import dji.sdk.keyvalue.key.ProductKey
 import dji.sdk.keyvalue.value.common.ComponentIndexType
 import dji.sdk.keyvalue.value.product.ProductType
@@ -11,12 +10,8 @@ import dji.v5.et.create
 import dji.v5.et.get
 import dji.v5.manager.datacenter.MediaDataCenter
 import dji.v5.manager.interfaces.ICameraStreamManager
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 class SharedDJIFrameSource(
     private val preferredCameraIndex: ComponentIndexType,
@@ -37,25 +32,22 @@ class SharedDJIFrameSource(
     private var activeCameraIndex: ComponentIndexType = preferredCameraIndex
     private val isCapturing = AtomicBoolean(false)
 
-    // Link to our new SRT hardware encoder
-    var srtStreamer: SrtStreamer? = null
-
-    // Keep telemetry listeners
-    private val metadataListeners = ConcurrentHashMap<String, (FrameMetadata) -> Unit>()
+    @Volatile private var currentSurface: Surface? = null
+    @Volatile private var surfaceWidth: Int = 0
+    @Volatile private var surfaceHeight: Int = 0
 
     @Volatile var targetFps: Int = 30
-    @Volatile private var frameIntervalNs: Long = 1_000_000_000L / 30L
 
-    private val lastSentTimestampNs = AtomicLong(0L)
-    private val frameCounter = AtomicLong(0)
+    private val metadataListeners = ConcurrentHashMap<String, (FrameMetadata) -> Unit>()
 
-    // Single-worker executor so DJI's camera callback thread is never blocked
-    private val frameProcessorExecutor = ThreadPoolExecutor(
-        1, 1, 0L, TimeUnit.MILLISECONDS,
-        ArrayBlockingQueue(1),
-        { r -> Thread(r, "DJI-SRT-FrameProc").apply { isDaemon = true } },
-        ThreadPoolExecutor.DiscardOldestPolicy()
-    )
+    var srtStreamer: SrtStreamer? = null
+        set(value) {
+            field?.onSurfaceReady = null
+            field?.onSurfaceDestroyed = null
+            field = value
+            value?.onSurfaceReady = { surface, w, h -> onEncoderSurfaceReady(surface, w, h) }
+            value?.onSurfaceDestroyed = { surface -> onEncoderSurfaceDestroyed(surface) }
+        }
 
     private val cameraStreamManager: ICameraStreamManager by lazy {
         MediaDataCenter.getInstance().cameraStreamManager
@@ -94,80 +86,58 @@ class SharedDJIFrameSource(
         val resolved = pickCameraIndex(available) ?: return
         if (resolved == activeCameraIndex) return
 
+        val oldSurface = currentSurface
+        if (isCapturing.get() && oldSurface != null) {
+            runCatching { cameraStreamManager.removeCameraStreamSurface(oldSurface) }
+        }
+
         activeCameraIndex = resolved
         Log.i(TAG, "Active camera index changed to: $resolved")
 
+        if (isCapturing.get() && oldSurface != null) {
+            attachSurface(oldSurface, surfaceWidth, surfaceHeight)
+        }
+    }
+
+    @Synchronized
+    private fun onEncoderSurfaceReady(surface: Surface, width: Int, height: Int) {
+        currentSurface?.let { old ->
+            if (old !== surface) {
+                runCatching { cameraStreamManager.removeCameraStreamSurface(old) }
+            }
+        }
+        currentSurface = surface
+        surfaceWidth = width
+        surfaceHeight = height
+
         if (isCapturing.get()) {
-            try {
-                cameraStreamManager.removeFrameListener(frameListener)
-                cameraStreamManager.addFrameListener(
-                    activeCameraIndex,
-                    ICameraStreamManager.FrameFormat.NV21,
-                    frameListener
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to re-attach frame listener: ${e.message}", e)
-            }
+            attachSurface(surface, width, height)
         }
     }
 
-    private val frameListener = object : ICameraStreamManager.CameraFrameListener {
-        override fun onFrame(
-            frameData: ByteArray,
-            offset: Int,
-            length: Int,
-            width: Int,
-            height: Int,
-            format: ICameraStreamManager.FrameFormat
-        ) {
-            if (!isCapturing.get() || srtStreamer?.isStreaming != true) return
-
-            val timestampNs = System.nanoTime()
-            val previousSent = lastSentTimestampNs.get()
-
-            // FPS limiting
-            if (previousSent != 0L && (timestampNs - previousSent) < frameIntervalNs) {
-                return
-            }
-            lastSentTimestampNs.set(timestampNs)
-
-            // Extract just the active bytes
-            val nv21Bytes = if (offset == 0 && length == frameData.size) {
-                frameData.clone()
-            } else {
-                frameData.copyOfRange(offset, (offset + length).coerceAtMost(frameData.size))
-            }
-
-            // Offload encoding to prevent dropping DJI SDK connection
-            frameProcessorExecutor.execute {
-                processFrameAsync(nv21Bytes, width, height, timestampNs)
-            }
+    @Synchronized
+    private fun onEncoderSurfaceDestroyed(surface: Surface) {
+        runCatching { cameraStreamManager.removeCameraStreamSurface(surface) }
+        if (currentSurface === surface) {
+            currentSurface = null
+            surfaceWidth = 0
+            surfaceHeight = 0
         }
     }
 
-    private fun processFrameAsync(frameData: ByteArray, width: Int, height: Int, timestampNs: Long) {
-        if (!isCapturing.get()) return
-
+    private fun attachSurface(surface: Surface, width: Int, height: Int) {
         try {
-            val frameNumber = frameCounter.incrementAndGet()
-
-            // 1. Capture and broadcast synced telemetry
-            if (metadataListeners.isNotEmpty()) {
-                val metadata = TelemetryProvider.captureMetadata(
-                    frameNumber = frameNumber,
-                    timestampNs = timestampNs,
-                    frameWidth = width,
-                    frameHeight = height,
-                    droneName = droneName
-                )
-                metadataListeners.values.forEach { it.invoke(metadata) }
-            }
-
-            // 2. Feed raw NV21 bytes into the SRT hardware encoder
-            srtStreamer?.feedCustomFrame(frameData, timestampNs, width, height)
-
+            runCatching { cameraStreamManager.enableStream(activeCameraIndex, true) }
+            cameraStreamManager.putCameraStreamSurface(
+                activeCameraIndex,
+                surface,
+                width,
+                height,
+                ICameraStreamManager.ScaleType.CENTER_INSIDE
+            )
+            Log.i(TAG, "Attached encoder Surface (${width}x${height}) to $activeCameraIndex")
         } catch (e: Exception) {
-            Log.e(TAG, "Error processing frame: ${e.message}", e)
+            Log.e(TAG, "Failed to attach Surface to DJI camera: ${e.message}", e)
         }
     }
 
@@ -179,37 +149,33 @@ class SharedDJIFrameSource(
         metadataListeners.remove(clientId)
     }
 
+    @Synchronized
     fun startCapture() {
         if (isCapturing.compareAndSet(false, true)) {
-            lastSentTimestampNs.set(0L)
             runCatching { cameraStreamManager.enableStream(activeCameraIndex, true) }
-            cameraStreamManager.addFrameListener(
-                activeCameraIndex,
-                ICameraStreamManager.FrameFormat.NV21,
-                frameListener
-            )
-            Log.i(TAG, "Started DJI Frame Source on $activeCameraIndex")
+            currentSurface?.let { attachSurface(it, surfaceWidth, surfaceHeight) }
+            Log.i(TAG, "Started DJI Surface Frame Source on $activeCameraIndex")
         }
     }
 
+    @Synchronized
     fun stopCapture() {
         if (isCapturing.compareAndSet(true, false)) {
-            cameraStreamManager.removeFrameListener(frameListener)
-            Log.i(TAG, "Stopped DJI Frame Source")
+            currentSurface?.let { runCatching { cameraStreamManager.removeCameraStreamSurface(it) } }
+            Log.i(TAG, "Stopped DJI Surface Frame Source")
         }
     }
 
     fun changeFrameRate(fps: Int) {
         targetFps = fps.coerceIn(1, 60)
-        frameIntervalNs = 1_000_000_000L / targetFps.toLong()
     }
 
     fun dispose() {
         stopCapture()
+        srtStreamer = null
         try {
             cameraStreamManager.removeAvailableCameraUpdatedListener(availableCameraListener)
         } catch (e: Exception) {}
         metadataListeners.clear()
-        frameProcessorExecutor.shutdownNow()
     }
 }

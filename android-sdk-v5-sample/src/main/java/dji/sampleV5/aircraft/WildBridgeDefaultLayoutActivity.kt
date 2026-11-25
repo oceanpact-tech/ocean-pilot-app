@@ -185,7 +185,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         private const val PREF_SRT_LATENCY = "srt_latency_ms"   // 0 = padrão da biblioteca
         private val SRT_KBPS_OPTIONS = intArrayOf(0, 1000, 1500, 2000, 3000, 4000, 4500, 6000, 8000)
         private val SRT_IFRAME_OPTIONS = intArrayOf(1, 2, 3)
-        private val SRT_LATENCY_OPTIONS = intArrayOf(0, 120, 200, 300, 500, 800, 1200, 2000)
+        private val SRT_LATENCY_OPTIONS = intArrayOf(0, 50, 120, 200, 300, 500, 800, 1200, 2000)
     }
 
     private enum class StreamResolutionPreset(
@@ -234,12 +234,9 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
     // Servers
     private var httpServer: SimpleHttpServer? = null
     private var telemetryServer: TelemetryServer? = null
-//    private var webRTCStreamer: WebRTCStreamer? = null
-//    @Volatile private var lastWhipUrl: String? = null  // Remembered for FPS/Quality mode restarts
     private var srtStreamer: SrtStreamer? = null
     private var srtFrameSource: SrtSharedFrameSource? = null
     @Volatile private var lastTelemetryClientIp: String? = null
-
 
     // Discovery (UDP broadcast/multicast)
     private var discoverySocket: DatagramSocket? = null
@@ -258,6 +255,9 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
     // Drone Configuration
     private lateinit var sharedPreferences: SharedPreferences
     private var droneName: String = DEFAULT_DRONE_NAME
+    
+    // Video streaming
+    private val srtLock = Any()
 
     // Phone Location
     private var locationManager: LocationManager? = null
@@ -1682,26 +1682,6 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             Log.w(TAG, "Telemetry port $TELEMETRY_PORT already in use")
         }
 
-        // // SRT Video Pipeline Initialization
-        // try {
-        //     srtStreamer = SrtStreamer(applicationContext)
-        //     srtFrameSource = SrtSharedFrameSource(ComponentIndexType.LEFT_OR_MAIN, droneName)
-        //     srtFrameSource?.srtStreamer = srtStreamer
-
-        //     val preset = getWebRTCResolutionPreset()
-        //     val fps = getWebRTCFps()
-        //     val srtWidth = if (preset.width > 0) preset.width else 1280
-        //     val srtHeight = if (preset.height > 0) preset.height else 720
-
-        //     srtStreamer?.prepareVideo(srtWidth, srtHeight, fps, preset.bitrate)
-        //     srtFrameSource?.changeFrameRate(fps)
-        //     srtFrameSource?.startCapture()
-
-        //     applySrtServerConfiguration()
-        // } catch (e: Exception) {
-        //     Log.e(TAG, "Error creating SRT streamer: ${e.message}")
-        // }
-
         // SRT Video Pipeline Initialization
         try {
             val config = buildVideoStreamConfig()
@@ -1716,34 +1696,6 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             Log.e(TAG, "Error creating SRT streamer: ${e.message}")
         }
     }
-
-    // private fun applySrtServerConfiguration() {
-    //     val preset = getWebRTCResolutionPreset()
-    //     val fps = getWebRTCFps()
-    //     val srtWidth = if (preset.width > 0) preset.width else 1280
-    //     val srtHeight = if (preset.height > 0) preset.height else 720
-
-    //     srtFrameSource?.changeFrameRate(fps)
-    //     srtStreamer?.prepareVideo(srtWidth, srtHeight, fps, preset.bitrate)
-
-    //     val configuredServer = sharedPreferences.getString(PREF_MEDIAMTX_SERVER, "")
-    //         ?.trim()
-    //         .orEmpty()
-
-    //     val fallbackIp = lastTelemetryClientIp?.trim().orEmpty()
-    //     if (configuredServer.isEmpty() && fallbackIp.isEmpty()) {
-    //         Log.i(TAG, "No SRT server configured and no telemetry client IP yet — stopping stream if active")
-    //         srtStreamer?.stopStream()
-    //         return
-    //     }
-
-    //     val srtUrl = buildSrtUrl(fallbackIp)
-    //     Log.i(TAG, "Applying SRT config -> url=$srtUrl, ${srtWidth}x${srtHeight}@${fps}fps")
-    //     srtStreamer?.stopStream()
-    //     srtStreamer?.startStream(srtUrl)
-    // }
-
-    private val srtLock = Any()
 
     private fun applySrtServerConfiguration() {
         val config = buildVideoStreamConfig()
