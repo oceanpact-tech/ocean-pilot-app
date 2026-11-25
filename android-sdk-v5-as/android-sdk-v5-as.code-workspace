@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../android-sdk-v5-uxsdk"
+		},
+		{
+			"path": "../test"
 		}
 	],
 	"settings": {
