@@ -194,5 +194,5 @@ dependencies {
     implementation 'io.getstream:stream-webrtc-android:1.1.1'
 
     // RootEncoder for SRT video streaming (Replaces WebRTC)
-    implementation 'com.github.pedroSG94.RootEncoder:library:2.4.5'
+    implementation 'com.github.pedroSG94.RootEncoder:library:2.8.2'
 }

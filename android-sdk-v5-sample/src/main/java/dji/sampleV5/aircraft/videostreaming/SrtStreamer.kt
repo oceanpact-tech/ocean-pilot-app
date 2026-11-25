@@ -14,6 +14,16 @@ import com.pedro.encoder.video.VideoEncoder
 import com.pedro.srt.srt.SrtClient
 import java.nio.ByteBuffer
 
+/** Parâmetros ajustáveis em tempo de execução. null = usa o padrão (preset / biblioteca). */
+data class SrtParams(
+    val kbps: Int? = null,
+    val fps: Int? = null,
+    val iframeSec: Int = 1,
+    val latencyMs: Int? = null,
+    val retransmitOverheadPct: Int? = null,
+    val serverSilenceMs: Long = 0
+)
+
 class SrtStreamer(private val context: Context) {
 
     private val TAG = "SrtStreamer"
@@ -21,8 +31,10 @@ class SrtStreamer(private val context: Context) {
 
     // Estado de controle: só na thread principal
     private var config: VideoStreamConfig = VideoStreamConfig.hd()
+    private var params = SrtParams()
     private var url: String? = null
     private var wanted = false
+    private var lastBytes = 0L
 
     @Volatile private var session: Session? = null
 
@@ -32,17 +44,17 @@ class SrtStreamer(private val context: Context) {
     private inner class Session : ConnectChecker, GetVideoData {
         val client = SrtClient(this)
         val encoder = VideoEncoder(this)
-        @Volatile var live = false          // encoder rodando
-        @Volatile var connected = false     // SRT conectado
+        @Volatile var live = false
+        @Volatile var connected = false
         @Volatile var sizeRequested = false
         @Volatile var sizeChanged = false
         @Volatile var w = 0
         @Volatile var h = 0
-        var connectCalled = false           // só main
+        var connectCalled = false
+
 
         private fun current() = session === this
 
-        // ConnectChecker
         override fun onConnectionStarted(url: String) {
             if (current()) Log.i(TAG, "SRT Connection Started: $url")
         }
@@ -53,12 +65,11 @@ class SrtStreamer(private val context: Context) {
         override fun onNewBitrate(bitrate: Long) {}
         override fun onAuthSuccess() {}
 
-        // GetVideoData
         override fun onVideoFormat(mediaFormat: MediaFormat) {}
-        override fun onSpsPpsVps(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
+        override fun onVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
             if (!current()) return
-            client.setVideoInfo(sps, pps ?: return, vps)
-            main.post { if (current()) connectIfNeeded(this) }   // só conecta com o SPS/PPS já entregue
+            client.setVideoInfo(sps, pps, vps)
+            main.post { if (current()) connectIfNeeded(this) }   // pode ser chamado mais de uma vez; connectIfNeeded protege
         }
         override fun getVideoData(h264Buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
             if (current() && connected) client.sendVideo(h264Buffer, info)
@@ -66,6 +77,25 @@ class SrtStreamer(private val context: Context) {
     }
 
     private val retry = Runnable { if (wanted && session == null) openSession() }
+
+    private val statsTick = object : Runnable {
+        override fun run() {
+            val s = session
+            if (s != null && s.connected) {
+                val c = s.client
+                val bytes = c.bytesSend
+                val kbps = ((bytes - lastBytes) * 8 / 1000).coerceAtLeast(0)
+                lastBytes = bytes
+                Log.i(TAG, "STATS rtt_ms=${c.rtt / 1000} lost=${c.packetsLost} lostUniq=${c.packetsLostUnique} " +
+                        "droppedV=${c.droppedVideoFrames} sentV=${c.sentVideoFrames} kbps=$kbps queue=${c.getItemsInCache()}")
+            } else {
+                lastBytes = 0
+            }
+            main.postDelayed(this, 1000)
+        }
+    }
+
+    init { main.postDelayed(statsTick, 1000) }
 
     // ---------------- API pública (qualquer thread) ----------------
 
@@ -90,6 +120,20 @@ class SrtStreamer(private val context: Context) {
             closeSession()
             Log.i(TAG, "Stopped SRT stream")
         }
+    }
+
+    /** Troca os parâmetros e reinicia a sessão (se estiver transmitindo). */
+    fun applyParams(p: SrtParams) {
+        main.post {
+            params = p
+            Log.i(TAG, "PARAMS $p")
+            if (wanted) openSession()
+        }
+    }
+
+    fun release() {
+        main.removeCallbacksAndMessages(null)
+        main.post { wanted = false; closeSession() }
     }
 
     fun feedCustomFrame(nv21ByteArray: ByteArray, timestampNs: Long, width: Int, height: Int) {
@@ -128,11 +172,11 @@ class SrtStreamer(private val context: Context) {
     }
 
     private fun startEncoder(s: Session, w: Int, h: Int) {
-        val cfg = config
-        val bps = cfg.copy(width = w, height = h).senderBitrateBps()
-        Log.i(TAG, "CONFIG w=$w h=$h fps=${cfg.fps} kbps=${bps / 1000} iframe=1")
+        val fps = params.fps ?: config.fps
+        val bps = params.kbps?.times(1000) ?: config.copy(width = w, height = h).senderBitrateBps()
+        Log.i(TAG, "CONFIG w=$w h=$h fps=$fps kbps=${bps / 1000} iframe=${params.iframeSec}")
         try {
-            val ok = s.encoder.prepareVideoEncoder(w, h, cfg.fps, bps, 0, 1, FormatVideoEncoder.YUV420Dynamical)
+            val ok = s.encoder.prepareVideoEncoder(w, h, fps, bps, 0, params.iframeSec, FormatVideoEncoder.YUV420Dynamical)
             if (!ok) { onLost("prepare failed"); return }
             s.w = w
             s.h = h
@@ -147,7 +191,10 @@ class SrtStreamer(private val context: Context) {
         if (s.connectCalled) return
         val u = url ?: return
         s.connectCalled = true
-        Log.i(TAG, "Connecting SRT stream to $u")
+        params.latencyMs?.let { s.client.setLatency(it) }                          // em ms
+        params.retransmitOverheadPct?.let { s.client.setRetransmitOverhead(it) }   // % (padrão 25)
+        s.client.setServerSilenceTimeout(params.serverSilenceMs)                   // 0 = desligado
+        Log.i(TAG, "Connecting SRT stream to $u latency=${params.latencyMs ?: "default"}")
         s.client.connect(u)
         main.postDelayed({ if (session === s && !s.connected) onLost("connect timeout") }, 8000)
     }
@@ -155,6 +202,7 @@ class SrtStreamer(private val context: Context) {
     private fun onConnected(s: Session) {
         s.connected = true
         Log.i(TAG, "SRT Connected successfully")
+        runCatching { s.encoder.requestKeyframe() }   // se não compilar, apague esta linha
     }
 
     private fun closeSession() {

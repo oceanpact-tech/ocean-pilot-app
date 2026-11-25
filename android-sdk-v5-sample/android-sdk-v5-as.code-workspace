@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../android-sdk-v5-as"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../android-sdk-v5-uxsdk"
+		}
+	],
+	"settings": {}
+}

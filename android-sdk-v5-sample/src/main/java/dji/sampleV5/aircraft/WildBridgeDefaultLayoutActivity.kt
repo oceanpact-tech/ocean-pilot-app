@@ -140,6 +140,7 @@ import dji.sampleV5.aircraft.videostreaming.VideoStreamConfig
 import dji.sampleV5.aircraft.videostreaming.StreamOptions
 import dji.sampleV5.aircraft.videostreaming.SrtStreamer
 import dji.sampleV5.aircraft.videostreaming.SharedDJIFrameSource as SrtSharedFrameSource
+import dji.sampleV5.aircraft.videostreaming.SrtParams
 
 /**
  * WildBridge Default Layout Activity
@@ -177,6 +178,14 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         // mDNS/Zeroconf service type
         private const val MDNS_SERVICE_TYPE = "_wildbridge._tcp."
         private val WEBRTC_FPS_OPTIONS = intArrayOf(5, 10, 15, 20, 25, 30)
+
+        // Video streaming
+        private const val PREF_SRT_KBPS = "srt_kbps"            // 0 = padrão do preset
+        private const val PREF_SRT_IFRAME = "srt_iframe_sec"
+        private const val PREF_SRT_LATENCY = "srt_latency_ms"   // 0 = padrão da biblioteca
+        private val SRT_KBPS_OPTIONS = intArrayOf(0, 1000, 1500, 2000, 3000, 4000, 4500, 6000, 8000)
+        private val SRT_IFRAME_OPTIONS = intArrayOf(1, 2, 3)
+        private val SRT_LATENCY_OPTIONS = intArrayOf(0, 120, 200, 300, 500, 800, 1200, 2000)
     }
 
     private enum class StreamResolutionPreset(
@@ -1228,7 +1237,10 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
             menu.add(0, 2, 1, "Set MediaMTX Server IP")
             menu.add(0, 5, 2, "Video FPS: ${getWebRTCFps()}")
             menu.add(0, 7, 3, "Video Resolution: ${getWebRTCResolutionPreset().menuLabel}")
-            var nextOrder = 3
+            menu.add(0, 8, 4, "Video Bitrate: ${srtKbpsLabel(getSrtKbps())}")
+            menu.add(0, 9, 5, "Keyframe Interval: ${getSrtIframeSec()} s")
+            menu.add(0, 10, 6, "SRT Latency: ${srtLatencyLabel(getSrtLatencyMs())}")
+            var nextOrder = 7
             if (shouldAllowMockVideo()) {
                 menu.add(0, 6, nextOrder++, "Mock Video: ${if (isMockVideoEnabled()) "On" else "Off"}")
             }
@@ -1756,6 +1768,7 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                 Log.i(TAG, "Applying SRT config -> url=$srtUrl, ${config.width}x${config.height}@${config.fps}fps")
                 streamer.stopStream()
                 streamer.prepareVideo(config)
+                streamer.applyParams(buildSrtParams())
                 streamer.startStream(srtUrl)
             }
         }.start()
@@ -1882,6 +1895,52 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
         return if (handleWildBridgeMenuItem(item.itemId)) true else super.onOptionsItemSelected(item)
     }
 
+
+    // #########################################################################
+
+    private fun getSrtKbps() = sharedPreferences.getInt(PREF_SRT_KBPS, 0)
+    private fun getSrtIframeSec() = sharedPreferences.getInt(PREF_SRT_IFRAME, 1)
+    private fun getSrtLatencyMs() = sharedPreferences.getInt(PREF_SRT_LATENCY, 0)
+
+    private fun srtKbpsLabel(v: Int) = if (v == 0) "preset default" else "$v kbps"
+    private fun srtLatencyLabel(v: Int) = if (v == 0) "default" else "$v ms"
+
+    private fun buildSrtParams() = SrtParams(
+        kbps = getSrtKbps().takeIf { it > 0 },
+        iframeSec = getSrtIframeSec(),
+        latencyMs = getSrtLatencyMs().takeIf { it > 0 }
+    )
+
+    private fun showSrtChoiceDialog(
+        title: String, prefKey: String, options: IntArray, current: Int, label: (Int) -> String
+    ) {
+        val labels = options.map(label).toTypedArray()
+        val checked = options.indexOf(current).coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setSingleChoiceItems(labels, checked) { dialog, which ->
+                sharedPreferences.edit().putInt(prefKey, options[which]).apply()
+                Toast.makeText(this, "$title: ${label(options[which])}", Toast.LENGTH_SHORT).show()
+                Log.i(TAG, "$title set to ${label(options[which])}")
+                applySrtServerConfiguration()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showSrtBitrateDialog() = showSrtChoiceDialog(
+        "SRT video bitrate", PREF_SRT_KBPS, SRT_KBPS_OPTIONS, getSrtKbps(), ::srtKbpsLabel
+    )
+    private fun showSrtKeyframeDialog() = showSrtChoiceDialog(
+        "Keyframe interval", PREF_SRT_IFRAME, SRT_IFRAME_OPTIONS, getSrtIframeSec()
+    ) { "$it s" }
+    private fun showSrtLatencyDialog() = showSrtChoiceDialog(
+        "SRT latency", PREF_SRT_LATENCY, SRT_LATENCY_OPTIONS, getSrtLatencyMs(), ::srtLatencyLabel
+    )
+
+    // #########################################################################
+
     private fun handleWildBridgeMenuItem(itemId: Int): Boolean {
         return when (itemId) {
             1 -> {
@@ -1900,6 +1959,9 @@ class WildBridgeDefaultLayoutActivity : DefaultLayoutActivity() {
                 showWebRTCResolutionDialog()
                 true
             }
+            8 -> { showSrtBitrateDialog(); true }
+            9 -> { showSrtKeyframeDialog(); true }
+            10 -> { showSrtLatencyDialog(); true }
             6 -> {
                 if (!shouldAllowMockVideo()) return true
                 val nextValue = !isMockVideoEnabled()
